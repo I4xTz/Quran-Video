@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import diyanetYeniData from "@/data/translations/diyanet_yeni.json";
 import ahmetVarolData from "@/data/translations/ahmet_varol.json";
+import sahihInternationalData from "@/data/translations/sahih_international.json";
 
 export type TranslationOption = {
   id: string;
@@ -13,8 +14,10 @@ export type TranslationOption = {
    *  "tanzil" = whole-Quran static JSON from the fawazahmed0/quran-api CDN
    *  (tanzil.net-sourced) by edition slug.
    *  "alquran" = per-surah fetch from api.alquran.cloud by edition slug.
+   *  "local" = any other translation bundled in src/data/translations/
+   *  (e.g. sahih_international, built by build-sahih-international.mjs).
    *  Empty ref for "none". */
-  source: "acikkuran" | "tanzil" | "alquran" | "none";
+  source: "acikkuran" | "local" | "tanzil" | "alquran" | "none";
   ref: string;
 };
 
@@ -30,10 +33,14 @@ export type TranslationOption = {
 // different endpoint on the same site) by
 // frontend/scripts/build-acikkuran-translations.mjs -- re-run that script to
 // refresh if acikkuran.com's wording ever changes.
-const LOCAL_ACIKKURAN_TRANSLATIONS: Record<string, Record<string, string>> = {
+const LOCAL_TRANSLATIONS: Record<string, Record<string, string>> = {
   diyanet_yeni: diyanetYeniData,
   ahmet_varol: ahmetVarolData,
+  sahih_international: sahihInternationalData,
 };
+
+// Both bundled kinds are read per-surah from the same local map.
+const isLocalSource = (source: TranslationOption["source"]) => source === "acikkuran" || source === "local";
 
 // Verified against the actual official text (screenshots of
 // kuran.diyanet.gov.tr / kuran-ikerim.org's Diyanet meal matched
@@ -83,6 +90,7 @@ export const TRANSLATION_OPTIONS: TranslationOption[] = [
   { id: "diyanet_eski", name: "Diyanet İşleri Meali (Eski)", source: "tanzil", ref: "tur-diyanetisleri" },
   { id: "ahmet_varol", name: "Süleyman Ateş Meali", source: "acikkuran", ref: "27" },
   { id: "elmalili", name: "Elmalılı Hamdi Yazır Meali", source: "alquran", ref: "tr.yazir" },
+  { id: "sahih_international", name: "Sahih International (English)", source: "local", ref: "en.sahih" },
 ];
 
 // Açık Kuran prefixes a translation shared across several verses with a
@@ -140,16 +148,16 @@ export function TranslationProvider({ children }: { children: React.ReactNode })
     // acikkuran and alquran are both per-surah APIs, so cache per
     // translation+surah. tanzil ships one whole-Quran file, so cache it
     // once per translation.
-    const cacheKey = selectedTranslation.source === "acikkuran" || selectedTranslation.source === "alquran"
+    const cacheKey = isLocalSource(selectedTranslation.source) || selectedTranslation.source === "alquran"
       ? `${selectedTranslationId}_${surahId}`
       : selectedTranslationId;
     if (translationsCache[cacheKey]) return; // Already cached
 
     setIsLoading(true);
     try {
-      if (selectedTranslation.source === "acikkuran") {
-        // Bundled locally -- see LOCAL_ACIKKURAN_TRANSLATIONS above.
-        const data = LOCAL_ACIKKURAN_TRANSLATIONS[selectedTranslationId] || {};
+      if (isLocalSource(selectedTranslation.source)) {
+        // Bundled locally -- see LOCAL_TRANSLATIONS above.
+        const data = LOCAL_TRANSLATIONS[selectedTranslationId] || {};
         const prefix = `${surahId}:`;
         const map: Record<string, string> = {};
         for (const [key, text] of Object.entries(data)) {
@@ -187,7 +195,7 @@ export function TranslationProvider({ children }: { children: React.ReactNode })
   const getTranslation = (surahId: number, ayahId: number, fallback: string) => {
     if (selectedTranslationId === "none") return "";
 
-    const cacheKey = selectedTranslation.source === "acikkuran" || selectedTranslation.source === "alquran"
+    const cacheKey = isLocalSource(selectedTranslation.source) || selectedTranslation.source === "alquran"
       ? `${selectedTranslationId}_${surahId}`
       : selectedTranslationId;
     if (translationsCache[cacheKey]) {

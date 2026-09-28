@@ -9,6 +9,7 @@ import quranData from "@/data/quran.json";
 import quranQcfV1Data from "@/data/quran-qcf-v1.json";
 import diyanetYeniData from "@/data/translations/diyanet_yeni.json";
 import ahmetVarolData from "@/data/translations/ahmet_varol.json";
+import sahihInternationalData from "@/data/translations/sahih_international.json";
 import { fixMojibake } from "@/lib/textEncoding";
 import { RECITER_DISPLAY_NAMES } from "@/lib/reciterNames";
 import { parseFile } from "music-metadata";
@@ -514,6 +515,8 @@ export async function POST(req: Request) {
     const LOCAL_TRANSLATIONS: Record<string, Record<string, string>> = {
       "diyanet_yeni": diyanetYeniData,
       "ahmet_varol": ahmetVarolData,
+      // Bundled by frontend/scripts/build-sahih-international.mjs.
+      "sahih_international": sahihInternationalData,
     };
     const TRANSLATION_SOURCES: Record<string, { source: "tanzil" | "alquran"; ref: string }> = {
       "diyanet_eski": { source: "tanzil", ref: "tur-diyanetisleri" },
