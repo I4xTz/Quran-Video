@@ -19,15 +19,15 @@ services:
     restart: unless-stopped
 
   # One-shot: applies the Prisma migrations (User, drafts, tokens...) before
-  # the backend starts. It must run first because `prisma migrate deploy`
-  # refuses a non-empty database with no migration history, and the backend
-  # creates its SQLAlchemy tables (surahs, ayahs) on startup. Never fails the
-  # stack -- a warning is printed instead so video creation still works.
+  # the app starts. Prisma lives in its own Postgres schema ("app", via
+  # ?schema=app) so the backend's SQLAlchemy tables (surahs, ayahs) in
+  # "public" never make `prisma migrate deploy` fail with P3005. Never fails
+  # the stack -- a warning is printed instead so video creation still works.
   migrate:
     build:
       context: ./frontend
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/kurannuru
+      - DATABASE_URL=postgresql://user:password@db:5432/kurannuru?schema=app
     command: sh -c "npx prisma migrate deploy || echo 'WARNING - prisma migrate deploy failed, login and gallery features may not work'"
     depends_on:
       db:
@@ -72,7 +72,7 @@ services:
       - NODE_OPTIONS=--max-old-space-size=2048 # Force Node to clean memory earlier
       - FREETYPE_PROPERTIES=cff:no-stem-darkening=1 autofitter:no-stem-darkening=1
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      - DATABASE_URL=postgresql://user:password@db:5432/kurannuru
+      - DATABASE_URL=postgresql://user:password@db:5432/kurannuru?schema=app
       - AUTH_SECRET=${AUTH_SECRET:-dev-only-insecure-secret-change-me} # Signs user session cookies -- set a real random value in your .env for anything beyond local dev
     shm_size: '2gb'
     deploy:

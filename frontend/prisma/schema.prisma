@@ -7,8 +7,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Lives in the same Postgres instance/database as the Python backend's
-// SQLAlchemy tables (surahs, ayahs) -- no name collision, separate ORM.
+// Lives in the same Postgres database as the Python backend, but in its own
+// "app" schema (DATABASE_URL ends in ?schema=app) -- the backend's SQLAlchemy
+// tables (surahs, ayahs) stay in "public", so migrations never collide.
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
