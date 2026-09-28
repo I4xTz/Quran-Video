@@ -66,6 +66,8 @@ export async function POST(req: Request) {
       backgroundOpacity: Number.isFinite(Number(formData.get("backgroundOpacity") ?? NaN))
         ? Math.max(0, Math.min(1, Number(formData.get("backgroundOpacity"))))
         : 0.8,
+      showSurahNameArabic: formData.get("showSurahNameArabic") !== "false",
+      showSurahNameEnglish: formData.get("showSurahNameEnglish") !== "false",
       translationFont: (formData.get("translationFont") as string) || "aileron",
       arabicFont: (formData.get("arabicFont") as string) || "qcf2",
     };

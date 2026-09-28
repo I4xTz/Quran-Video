@@ -161,6 +161,9 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   const [translationOffsetY, setTranslationOffsetY] = useState(0);
   // Background image/video opacity (0..1) -- see QuranVideoProps.backgroundOpacity.
   const [backgroundOpacity, setBackgroundOpacity] = useState(0.8);
+  // Header lines toggles -- see QuranVideoProps.showSurahNameArabic.
+  const [showSurahNameArabic, setShowSurahNameArabic] = useState(true);
+  const [showSurahNameEnglish, setShowSurahNameEnglish] = useState(true);
   const [renderState, setRenderState] = useState<RenderState>("idle");
   const [surahTurkishNames, setSurahTurkishNames] = useState<Map<number, string>>(
     new Map(surahs.map((s) => [s.id, s.transliteration]))
@@ -537,6 +540,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     formData.append("arabicOffsetY", String(arabicOffsetY));
     formData.append("translationOffsetY", String(translationOffsetY));
     formData.append("backgroundOpacity", String(backgroundOpacity));
+    formData.append("showSurahNameArabic", String(showSurahNameArabic));
+    formData.append("showSurahNameEnglish", String(showSurahNameEnglish));
     formData.append("translationFont", translationFont);
     formData.append("arabicFont", arabicFont);
     if (translationFont === "custom") {
@@ -716,6 +721,11 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   useEffect(() => {
     setPreviewProps((prev) => (prev ? { ...prev, arabicFont } : prev));
   }, [arabicFont]);
+
+  // Same reasoning -- hiding a header line is a pure client-side switch.
+  useEffect(() => {
+    setPreviewProps((prev) => (prev ? { ...prev, showSurahNameArabic, showSurahNameEnglish } : prev));
+  }, [showSurahNameArabic, showSurahNameEnglish]);
 
   // A user-picked translation font FILE (as opposed to one of the built-in
   // TRANSLATION_FONT_OPTIONS) -- see the picker in Step1SurahVerse.tsx.
@@ -1226,6 +1236,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
       formData.append("arabicOffsetY", String(arabicOffsetY));
       formData.append("translationOffsetY", String(translationOffsetY));
       formData.append("backgroundOpacity", String(backgroundOpacity));
+      formData.append("showSurahNameArabic", String(showSurahNameArabic));
+      formData.append("showSurahNameEnglish", String(showSurahNameEnglish));
       formData.append("translationFont", translationFont);
       formData.append("arabicFont", arabicFont);
       if (customTranslationFontFile) {
@@ -1316,6 +1328,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     arabicOffsetY,
     translationOffsetY,
     backgroundOpacity,
+    showSurahNameArabic,
+    showSurahNameEnglish,
     translationFont,
     arabicFont,
     customTranslationFontFile,
@@ -1372,6 +1386,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     arabicOffsetY,
     translationOffsetY,
     backgroundOpacity,
+    showSurahNameArabic,
+    showSurahNameEnglish,
     translationFont,
     arabicFont,
     customTranslationFontFile,
@@ -1471,6 +1487,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
         if (typeof data.arabicOffsetY === "number") setArabicOffsetY(data.arabicOffsetY);
         if (typeof data.translationOffsetY === "number") setTranslationOffsetY(data.translationOffsetY);
         if (typeof data.backgroundOpacity === "number") setBackgroundOpacity(data.backgroundOpacity);
+        if (typeof data.showSurahNameArabic === "boolean") setShowSurahNameArabic(data.showSurahNameArabic);
+        if (typeof data.showSurahNameEnglish === "boolean") setShowSurahNameEnglish(data.showSurahNameEnglish);
         if (data.translationFont) setTranslationFont(data.translationFont);
         if (data.arabicFont) setArabicFont(data.arabicFont);
         // No File object to restore (never was one, just its already-
@@ -2618,6 +2636,10 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
                 onTranslationOffsetYChange={handleTranslationOffsetYChange}
                 backgroundOpacity={backgroundOpacity}
                 onBackgroundOpacityChange={setBackgroundOpacity}
+                showSurahNameArabic={showSurahNameArabic}
+                onShowSurahNameArabicChange={setShowSurahNameArabic}
+                showSurahNameEnglish={showSurahNameEnglish}
+                onShowSurahNameEnglishChange={setShowSurahNameEnglish}
                 uniformTextScale={uniformTextScale}
                 onUniformTextScaleChange={setUniformTextScale}
               />

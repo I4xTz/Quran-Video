@@ -186,6 +186,10 @@ export type QuranVideoProps = {
   surahNameTransliteration: string;
   // English transliteration shown under the Arabic name in the video header.
   surahNameEnglish?: string;
+  // Each header line can be hidden independently. Default true everywhere
+  // it's read, so older saved drafts/renders keep showing both.
+  showSurahNameArabic?: boolean;
+  showSurahNameEnglish?: boolean;
   backgroundImagePath: string | null;
   // When set, takes priority over backgroundImagePath and is rendered
   // muted/looped instead (see QuranVideo.tsx). backgroundVideoDurationInFrames

@@ -65,6 +65,11 @@ interface Step5Props {
   // Background image/video opacity (0..1) -- see QuranVideoProps.
   backgroundOpacity: number;
   onBackgroundOpacityChange: (opacity: number) => void;
+  // Show/hide each line of the surah-name header -- see QuranVideoProps.
+  showSurahNameArabic: boolean;
+  onShowSurahNameArabicChange: (show: boolean) => void;
+  showSurahNameEnglish: boolean;
+  onShowSurahNameEnglishChange: (show: boolean) => void;
   // When on, resizing text on the preview applies to every ayah at once --
   // see VideoCreatorForm's applyUniformScale.
   uniformTextScale: boolean;
@@ -209,6 +214,54 @@ function UniformTextScaleToggle({
   );
 }
 
+function SurahNameToggles({
+  isArabic,
+  showArabic,
+  onShowArabicChange,
+  showEnglish,
+  onShowEnglishChange,
+}: {
+  isArabic: boolean;
+  showArabic: boolean;
+  onShowArabicChange: (show: boolean) => void;
+  showEnglish: boolean;
+  onShowEnglishChange: (show: boolean) => void;
+}) {
+  const title = isArabic ? "اسم السورة في الفيديو" : "Videoda Sure Adı";
+  const rows = [
+    { label: isArabic ? "بالعربية" : "Arapça", checked: showArabic, onChange: onShowArabicChange },
+    { label: isArabic ? "بالإنجليزية" : "İngilizce", checked: showEnglish, onChange: onShowEnglishChange },
+  ];
+  return (
+    <div className="rounded-xl border border-border bg-surface px-4 py-3">
+      <span className="text-xs font-medium text-foreground">{title}</span>
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+        {rows.map((row) => (
+          <label key={row.label} className="flex cursor-pointer items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={row.checked}
+              aria-label={`${title} - ${row.label}`}
+              onClick={() => row.onChange(!row.checked)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                row.checked ? "bg-primary" : "bg-border"
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white shadow-md transition-transform ${
+                  row.checked ? "translate-x-5" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+            <span className="text-[11px] text-muted-foreground">{row.label}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BackgroundOpacitySlider({
   isArabic,
   opacity,
@@ -281,6 +334,10 @@ export default function Step5Generate({
   onTranslationOffsetYChange,
   backgroundOpacity,
   onBackgroundOpacityChange,
+  showSurahNameArabic,
+  onShowSurahNameArabicChange,
+  showSurahNameEnglish,
+  onShowSurahNameEnglishChange,
   uniformTextScale,
   onUniformTextScaleChange,
 }: Step5Props) {
@@ -365,6 +422,16 @@ export default function Step5Generate({
 
       {previewProps && (
         <UniformTextScaleToggle isArabic={isArabic} checked={uniformTextScale} onChange={onUniformTextScaleChange} />
+      )}
+
+      {previewProps && (
+        <SurahNameToggles
+          isArabic={isArabic}
+          showArabic={showSurahNameArabic}
+          onShowArabicChange={onShowSurahNameArabicChange}
+          showEnglish={showSurahNameEnglish}
+          onShowEnglishChange={onShowSurahNameEnglishChange}
+        />
       )}
 
       {previewProps && (previewProps.backgroundImagePath || previewProps.backgroundVideoPath) && (

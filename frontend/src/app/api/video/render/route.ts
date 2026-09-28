@@ -439,6 +439,9 @@ export async function POST(req: Request) {
     // Not `|| 0.8` -- 0 (fully hidden background) is a valid choice.
     const rawBackgroundOpacity = Number(formData.get("backgroundOpacity") ?? NaN);
     const backgroundOpacity = Number.isFinite(rawBackgroundOpacity) ? Math.max(0, Math.min(1, rawBackgroundOpacity)) : 0.8;
+    // Shown unless explicitly turned off, so older clients/drafts keep both.
+    const showSurahNameArabic = formData.get("showSurahNameArabic") !== "false";
+    const showSurahNameEnglish = formData.get("showSurahNameEnglish") !== "false";
     const requestedAspectRatio = formData.get("aspectRatio") as string | null;
     const aspectRatio: AspectRatio =
       requestedAspectRatio && requestedAspectRatio in ASPECT_RATIO_DIMENSIONS
@@ -1188,6 +1191,8 @@ export async function POST(req: Request) {
       surahNameArabic: fixMojibake(removeTashkeel(apiSurah?.name_arabic || localSurah.name)),
       surahNameTransliteration: fixMojibake(apiSurah?.name_turkish || localSurah.transliteration).toLocaleUpperCase("tr-TR"),
       surahNameEnglish: getSurahEnglishName(surahId),
+      showSurahNameArabic,
+      showSurahNameEnglish,
       backgroundImagePath,
       backgroundVideoPath,
       backgroundVideoDurationInFrames,

@@ -743,6 +743,8 @@ export function QuranVideo({
   surahNameArabic,
   surahNameTransliteration,
   surahNameEnglish,
+  showSurahNameArabic = true,
+  showSurahNameEnglish = true,
   backgroundImagePath,
   backgroundVideoPath,
   backgroundVideoDurationInFrames,
@@ -1200,32 +1202,37 @@ export function QuranVideo({
           opacity: headerOpacity,
         }}
       >
-        <div
-          dir="rtl"
-          style={{
-            fontFamily: `"${FONT_SURAH_NAME_FAMILY}", serif`,
-            fontSize: Math.round(SURAH_NAME_FONT_SIZE * effectiveTextScale),
-            fontWeight: SURAH_NAME_FONT_WEIGHT,
-            lineHeight: SURAH_NAME_LINE_HEIGHT,
-            textShadow: TEXT_SHADOW_STRONG,
-          }}
-        >
-          {surahNameArabic.startsWith("سورة") ? surahNameArabic : `سورة ${surahNameArabic}`}
-        </div>
-        <div
-          style={{
-            fontFamily: `"${FONT_TRANSLATION_FAMILY}", Arial, sans-serif`,
-            fontSize: Math.round(TRANSLITERATION_FONT_SIZE * effectiveTextScale),
-            fontWeight: TRANSLITERATION_FONT_WEIGHT,
-            lineHeight: TRANSLITERATION_LINE_HEIGHT,
-            letterSpacing: TRANSLITERATION_LETTER_SPACING,
-            color: TRANSLITERATION_COLOR,
-            marginTop: Math.round(TRANSLITERATION_MARGIN_TOP * effectiveTextScale),
-            textShadow: TEXT_SHADOW_STRONG,
-          }}
-        >
-          {`Surah ${surahNameEnglish ?? surahNameTransliteration}`}
-        </div>
+        {showSurahNameArabic && (
+          <div
+            dir="rtl"
+            style={{
+              fontFamily: `"${FONT_SURAH_NAME_FAMILY}", serif`,
+              fontSize: Math.round(SURAH_NAME_FONT_SIZE * effectiveTextScale),
+              fontWeight: SURAH_NAME_FONT_WEIGHT,
+              lineHeight: SURAH_NAME_LINE_HEIGHT,
+              textShadow: TEXT_SHADOW_STRONG,
+            }}
+          >
+            {surahNameArabic.startsWith("سورة") ? surahNameArabic : `سورة ${surahNameArabic}`}
+          </div>
+        )}
+        {showSurahNameEnglish && (
+          <div
+            style={{
+              fontFamily: `"${FONT_TRANSLATION_FAMILY}", Arial, sans-serif`,
+              fontSize: Math.round(TRANSLITERATION_FONT_SIZE * effectiveTextScale),
+              fontWeight: TRANSLITERATION_FONT_WEIGHT,
+              lineHeight: TRANSLITERATION_LINE_HEIGHT,
+              letterSpacing: TRANSLITERATION_LETTER_SPACING,
+              color: TRANSLITERATION_COLOR,
+              // Only spaced below the Arabic line when that line is shown.
+              marginTop: showSurahNameArabic ? Math.round(TRANSLITERATION_MARGIN_TOP * effectiveTextScale) : 0,
+              textShadow: TEXT_SHADOW_STRONG,
+            }}
+          >
+            {`Surah ${surahNameEnglish ?? surahNameTransliteration}`}
+          </div>
+        )}
       </AbsoluteFill>
     </AbsoluteFill>
   );
