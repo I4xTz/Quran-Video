@@ -11,7 +11,28 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d kurannuru"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
+
+  # One-shot: applies the Prisma migrations (User, drafts, tokens...) before
+  # the backend starts. It must run first because `prisma migrate deploy`
+  # refuses a non-empty database with no migration history, and the backend
+  # creates its SQLAlchemy tables (surahs, ayahs) on startup. Never fails the
+  # stack -- a warning is printed instead so video creation still works.
+  migrate:
+    build:
+      context: ./frontend
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/kurannuru
+    command: sh -c "npx prisma migrate deploy || echo 'WARNING - prisma migrate deploy failed, login and gallery features may not work'"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
   backend:
     build:
@@ -22,7 +43,10 @@ services:
       - DATABASE_URL=postgresql://user:password@db:5432/kurannuru
       - CORS_ORIGINS=*
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./backend:/app
     # Wipes disposable extraction/render scratch space on every container
@@ -30,13 +54,6 @@ services:
     # across restarts -- saved drafts and the size-capped surah_cache are
     # untouched since those are real user data / already self-limiting.
     command: sh -c "rm -rf /app/data/extracted_clips/* /app/data/temp_extraction/* /app/app/static/tmp/*/ 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     restart: on-failure
 
   frontend:
@@ -60,11 +77,6 @@ services:
     shm_size: '2gb'
     deploy:
       resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
         limits:
           cpus: '8'
           memory: 8G

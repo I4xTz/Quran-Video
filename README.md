@@ -37,8 +37,8 @@ Follow these instructions to get the project up and running on your local machin
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/KuranNuru-Video-Creator.git
-cd KuranNuru-Video-Creator
+git clone https://github.com/I4xTz/Quran-Video.git
+cd Quran-Video
 ```
 
 ### 2. Environment Variables
@@ -55,6 +55,14 @@ docker compose up --build
 ```
 
 *(Note: The first build might take a while as it downloads the necessary Docker images, Python dependencies, and Node modules.)*
+
+This runs on the CPU and works on any machine with Docker. The database tables (including user accounts) are created automatically on first start.
+
+**Optional – NVIDIA GPU acceleration:** if you have an NVIDIA GPU and the NVIDIA Container Toolkit installed, add the GPU override file for much faster audio alignment:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
 
 ### 4. Access the Application
 Once the containers are successfully running, you can access the services at:
@@ -74,7 +82,7 @@ docker compose down -v
 ```
 
 ## 📝 Notes
-- **GPU Usage**: The `docker-compose.yml` is pre-configured to request 1 NVIDIA GPU. If you don't have a GPU or encounter errors related to `driver: nvidia`, you may need to remove or comment out the `deploy: resources: reservations: devices` section in the `docker-compose.yml` file under the `backend` and `frontend` services.
+- **GPU Usage**: The default `docker-compose.yml` does not require a GPU — Whisper automatically runs on the CPU (slower audio alignment, rendering is unaffected). Use `docker-compose.gpu.yml` as shown above to enable an NVIDIA GPU.
 - **Port Conflicts**: Ensure ports `3000`, `8000`, `5433`, and `6380` are not being used by other applications on your host machine.
 
 ## 📄 License

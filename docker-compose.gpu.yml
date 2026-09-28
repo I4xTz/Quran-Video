@@ -1,0 +1,24 @@
+# Optional NVIDIA GPU acceleration (much faster Whisper audio alignment).
+# Requires an NVIDIA GPU + NVIDIA Container Toolkit. Use together with the
+# base file:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+# Without this file everything runs on the CPU (Whisper falls back automatically).
+
+services:
+  backend:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  frontend:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
