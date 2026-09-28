@@ -1,0 +1,64 @@
+[
+  {
+    "surah": 64,
+    "ayah": 11,
+    "mappings": [
+      {
+        "part": 1,
+        "word_count": 8,
+        "translation_text": "",
+        "start_ms": 10042,
+        "end_ms": 20483,
+        "arabic_text": "ﱎ ﱏ ﱐ ﱑ ﱒ ﱓ ﱔ ﱕ",
+        "isFirstOfAyah": true,
+        "arabicOffsetY": -1.0714343080912991,
+        "arabicTextScale": 0.941862063910666
+      },
+      {
+        "part": 2,
+        "word_count": 6,
+        "translation_text": "",
+        "start_ms": 20483,
+        "end_ms": 27444,
+        "arabic_text": "ﱖ ﱗ ﱘ ﱙ ﱚ ﱛ",
+        "isFirstOfAyah": false
+      },
+      {
+        "part": 3,
+        "word_count": 5,
+        "translation_text": "",
+        "start_ms": 27444,
+        "end_ms": 33914,
+        "arabic_text": "ﱜ ﱝ ﱞ ﱟ ﱠ",
+        "isFirstOfAyah": false
+      }
+    ]
+  },
+  {
+    "surah": 64,
+    "ayah": 12,
+    "mappings": [
+      {
+        "part": 1,
+        "word_count": 5,
+        "translation_text": "",
+        "start_ms": 33914,
+        "end_ms": 40846,
+        "arabic_text": "ﱡ ﱢ ﱣ ﱤ ﱥ",
+        "isFirstOfAyah": true
+      },
+      {
+        "part": 2,
+        "word_count": 8,
+        "translation_text": "",
+        "start_ms": 40846,
+        "end_ms": 51788,
+        "arabic_text": "ﱦ ﱧ ﱨ ﱩ ﱪ ﱫ ﱬ ﱭ",
+        "isFirstOfAyah": false,
+        "arabicOffsetY": 1.5401879674033538,
+        "arabicWidthScale": 1.04,
+        "arabicTextScale": 0.7560544390834821
+      }
+    ]
+  }
+]
