@@ -111,9 +111,15 @@ RECITERS_MP3QURAN = {
     "raad_alkurdi": "https://server6.mp3quran.net/kurdi/{surah:03d}.mp3"
 }
 
+# Mp3Quran ayat_timing "read" ids -- each MUST belong to the exact recording
+# in RECITERS_MP3QURAN above (same folder_url in the /ayat_timing/reads
+# listing). Reciters left out here get self-generated timings instead, see
+# generate_surah_timings(). "maher" is deliberately absent: read 133 is his
+# Mujawwad recording (Almusshaf-Al-Mojawwad/), not the Murattal one we
+# download, and scaling one onto the other landed on the wrong ayat
+# (concretely observed: An-Nisa 27-28 extracted from a different passage).
 RECITERS_TIMING_ID = {
     "ajmi": 5,
-    "maher": 133,
     "mishary": 123,
     "yasser": 92,
     "mousa": 243,
@@ -224,6 +230,233 @@ def fetch_surah_texts(surah_id):
     
     return ayahs
 
+# ========== SELF-GENERATED AYAH TIMINGS ==========
+# For recordings with no matching Mp3Quran ayat_timing data. Whisper over a
+# whole long recording silently skips stretches (observed: the Basmala of a
+# full-surah Al-Fatiha, whole ayat in long surahs), so transcribe in short
+# overlapping chunks instead, then align the transcript to the ENTIRE surah
+# text in order -- a single monotonic alignment can't confuse one ayah with a
+# similar-sounding one elsewhere, unlike a per-request fuzzy search. The
+# per-word result is cached per reciter+surah, so only the first request for a
+# surah pays the transcription cost; extract_clip() then slices straight from
+# it via _extract_from_word_timings().
+
+TIMING_SR = 16000
+TIMING_CHUNK_SECONDS = 30.0
+TIMING_CHUNK_OVERLAP = 4.0
+# Below this fraction of matched words, the recording likely isn't this
+# surah (or is too noisy) -- refuse rather than cut the wrong passage.
+MIN_TIMING_COVERAGE = 0.6
+# Minimum Phase 3 text-match ratio accepted for a reciter extraction.
+RECITER_MIN_MATCH_RATIO = 0.35
+_timing_gen_lock = threading.Lock()
+
+
+def _norm_ar(t):
+    t = re.sub(r'[ؗ-ًؚ-ْٰۖ-ۭ]', '', t)
+    t = re.sub(r'[^\w]', '', t)
+    return (t.replace('ٱ', 'ا').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+             .replace('ة', 'ه').replace('ى', 'ي'))
+
+
+def _load_audio_16k(path):
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(TIMING_SR),
+                          "-f", "s16le", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+
+
+def _speech_onset(audio, threshold_db=-40.0, frame_seconds=0.05):
+    """Time of the first frame louder than threshold_db (0.0 if none)."""
+    import numpy as np
+    frame = int(TIMING_SR * frame_seconds)
+    for i in range(0, len(audio) - frame, frame):
+        rms = float(np.sqrt(np.mean(audio[i:i + frame] ** 2)))
+        if rms > 0 and 20 * np.log10(rms) > threshold_db:
+            return i / TIMING_SR
+    return 0.0
+
+
+def _transcribe_chunked(audio):
+    model = get_whisper_model('OdyAsh/faster-whisper-base-ar-quran')
+    total = len(audio) / TIMING_SR
+    words, start = [], 0.0
+    while start < total:
+        end = min(total, start + TIMING_CHUNK_SECONDS)
+        chunk = audio[int(start * TIMING_SR):int(end * TIMING_SR)]
+        result = model.transcribe(chunk, language='ar', word_timestamps=True, verbose=None)
+        # Each chunk owns the middle of its overlap with a neighbor, so a word
+        # heard by both chunks is kept exactly once.
+        keep_from = start + (TIMING_CHUNK_OVERLAP / 2 if start > 0 else 0.0)
+        keep_to = end - TIMING_CHUNK_OVERLAP / 2 if end < total else float('inf')
+        for seg in result.segments:
+            for w in seg.words:
+                t0 = start + w.start
+                if keep_from <= t0 < keep_to and _norm_ar(w.word):
+                    words.append((_norm_ar(w.word), t0, start + w.end))
+        if end >= total:
+            break
+        start = end - TIMING_CHUNK_OVERLAP
+    return words
+
+
+def generate_surah_timings(reciter_id, surah_id, full_audio_path, ayahs_text):
+    """Word-level timings for this exact recording, generated once and cached
+    next to the surah audio: {"coverage", "duration", "words": {"<ayah>":
+    [[start_s, end_s], ...]}} with one entry per word of ayahs_text[a]["clean"]
+    (same index as ayahs_text[a]["uthmani"])."""
+    import difflib
+    cache_file = SURAH_CACHE_DIR / f"{reciter_id}_{surah_id:03d}_timings.json"
+    with _timing_gen_lock:
+        if cache_file.exists():
+            logger.info(f"Self-generated timings for {reciter_id} surah {surah_id} found in cache.")
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        logger.info(f"Generating ayah timings for {reciter_id} surah {surah_id} (one-time, chunked transcription)...")
+        audio = _load_audio_16k(full_audio_path)
+        words = _transcribe_chunked(audio)
+
+        # (normalized token, ayah, word index) for the whole surah, in order.
+        # Huroof Muqatta'at expand to their spoken letter names, so one text
+        # word can span several tokens.
+        expected = []
+        for a in sorted(ayahs_text):
+            for wi, cw in enumerate(ayahs_text[a]["clean"]):
+                for part in HUROOF_MUQATTAAH.get(cw, cw).split():
+                    if _norm_ar(part):
+                        expected.append((_norm_ar(part), a, wi))
+
+        sm = difflib.SequenceMatcher(None, [w[0] for w in words], [e[0] for e in expected], autojunk=False)
+        tok_t = [None] * len(expected)  # index into `words` of each matched token
+        for blk in sm.get_matching_blocks():
+            for k in range(blk.size):
+                tok_t[blk.b + k] = blk.a + k
+        coverage = sum(t is not None for t in tok_t) / len(expected) if expected else 0.0
+        if coverage < MIN_TIMING_COVERAGE:
+            _fail(f"Could not match the recording of surah {surah_id} to its text "
+                  f"(only {coverage:.0%} of words matched) -- refusing to guess ayah positions.")
+
+        # Collapse tokens back to text words: [ayah, word index, t_first, t_last]
+        # where t_* index into `words` (None when no token of it matched).
+        text_words = []
+        for i, (_, a, wi) in enumerate(expected):
+            if not text_words or text_words[-1][:2] != [a, wi]:
+                text_words.append([a, wi, None, None])
+            if tok_t[i] is not None:
+                tw = text_words[-1]
+                tw[2] = tok_t[i] if tw[2] is None else tw[2]
+                tw[3] = tok_t[i]
+        times = [None] * len(text_words)
+        for k, (_, _, t0, t1) in enumerate(text_words):
+            if t0 is not None:
+                times[k] = [words[t0][1], words[t1][2]]
+
+        # Fill each run of unmatched text words. Prefer what Whisper actually
+        # heard in that same gap (e.g. "يس" written as-is while the text
+        # expects its spelled-out letter names), assigned one-to-one when the
+        # counts line up; a leading gap takes the LAST heard words before the
+        # first match, since anything earlier is typically the Basmala or
+        # Isti'adha, which aren't part of the surah text. Otherwise spread
+        # the run evenly over the gap (from the first audible sound for a
+        # leading gap nothing was heard in, e.g. an unrecognized Basmala).
+        onset = _speech_onset(audio)
+        duration = len(audio) / TIMING_SR
+        k = 0
+        while k < len(text_words):
+            if times[k] is not None:
+                k += 1
+                continue
+            run_end = k
+            while run_end < len(text_words) and times[run_end] is None:
+                run_end += 1
+            n = run_end - k
+            prev_t = text_words[k - 1][3] if k > 0 else -1
+            next_t = text_words[run_end][2] if run_end < len(text_words) else len(words)
+            heard = words[prev_t + 1:next_t]
+            if k == 0 and len(heard) > n:
+                heard = heard[-n:]
+            elif run_end == len(text_words) and len(heard) > n:
+                heard = heard[:n]
+            if len(heard) == n:
+                for j in range(n):
+                    times[k + j] = [heard[j][1], heard[j][2]]
+            else:
+                span_start = heard[0][1] if heard else (times[k - 1][1] if k > 0 else onset)
+                span_end = times[run_end][0] if run_end < len(text_words) else duration
+                step = max(0.0, span_end - span_start) / n
+                for j in range(n):
+                    times[k + j] = [span_start + j * step, span_start + (j + 1) * step]
+            k = run_end
+
+        words_out = {str(a): [] for a in sorted(ayahs_text)}
+        for (a, _, _, _), (ws, we) in zip(text_words, times):
+            words_out[str(a)].append([round(ws, 3), round(max(we, ws + 0.05), 3)])
+        data = {"coverage": round(coverage, 4), "duration": round(duration, 3), "words": words_out}
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        logger.info(f"Generated word timings for {len(words_out)} ayat (word coverage {coverage:.1%}).")
+        return data
+
+
+def _extract_from_word_timings(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                               full_audio_path, ayahs_text, final_clip_path, final_json_path):
+    """Slice start..end ayat straight from generate_surah_timings() word
+    timings -- no macro crop or forced alignment (which was observed to
+    collapse every word of an ayah into its first second for recordings
+    without Mp3Quran timings, e.g. Al-Mulk 10-12 / maher)."""
+    data = generate_surah_timings(reciter_id, surah_id, full_audio_path, ayahs_text)
+    words = data["words"]
+    duration = data["duration"]
+    if not words.get(str(start_ayah)) or not words.get(str(end_ayah)):
+        _fail(f"No word timings for ayah {start_ayah}-{end_ayah} of surah {surah_id}.")
+
+    abs_start = words[str(start_ayah)][0][0]
+    abs_end = words[str(end_ayah)][-1][1]
+    # Whisper's last-word boundary tends to cut a final madd short, so extend
+    # the end towards the next ayah's first word (never past it).
+    next_words = words.get(str(end_ayah + 1))
+    next_start = next_words[0][0] if next_words else duration
+    abs_end = max(abs_end, min(abs_end + 1.0, next_start - 0.1))
+
+    pad_start_val = 0.250
+    slice_start = max(0.0, abs_start - pad_start_val - pad_seconds)
+    slice_end = min(duration, abs_end + 0.5 + pad_seconds)
+    clip_duration = slice_end - slice_start
+    fade = min(0.150, clip_duration / 4)
+
+    logger.info(f"=== Slicing {start_ayah}-{end_ayah} at {slice_start:.2f}s-{slice_end:.2f}s (self-generated word timings) ===")
+    subprocess.run([
+        "ffmpeg", "-y", "-ss", str(slice_start), "-i", str(full_audio_path), "-t", str(clip_duration), "-vn",
+        "-af", f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={clip_duration - fade:.3f}:d={fade:.3f}",
+        "-b:a", "192k", str(final_clip_path)
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if not final_clip_path.exists() or final_clip_path.stat().st_size < 1024:
+        _fail("Slice produced an empty or missing clip.")
+
+    verses = {}
+    prev_end = 0
+    for a in range(start_ayah, end_ayah + 1):
+        out = []
+        for uthmani_word, (ws, we) in zip(ayahs_text[a]["uthmani"], words.get(str(a), [])):
+            start_ms = max(prev_end, int((ws - slice_start) * 1000))
+            end_ms = max(start_ms + 50, int((we - slice_start) * 1000))
+            out.append({"w": uthmani_word, "start": start_ms, "end": end_ms})
+            prev_end = end_ms
+        verses[str(a)] = {"words": out}
+
+    with open(final_json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "surah": surah_id, "start_ayah": start_ayah, "end_ayah": end_ayah, "reciter": reciter_id,
+            "pad_seconds": pad_seconds,
+            # Low-confidence only when this surah matched poorly overall.
+            "lowConfidenceEnd": data["coverage"] < 0.85,
+            "verses": verses,
+        }, f, ensure_ascii=False, indent=2)
+    logger.info(f"Done. Extracted: {final_clip_path}")
+    return str(final_clip_path), str(final_json_path)
+
+
 def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
     if reciter_id not in RECITERS_MP3QURAN:
         _fail(f"Reciter '{reciter_id}' not found.")
@@ -274,6 +507,10 @@ def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
         
         if start_ayah not in ayahs_text or end_ayah not in ayahs_text:
             _fail(f"Ayah bounds error: surah {surah_id} has no ayah {start_ayah} or {end_ayah}.")
+
+        if reciter_id not in RECITERS_TIMING_ID:
+            return _extract_from_word_timings(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                                              full_audio_path, ayahs_text, final_clip_path, final_json_path)
 
         logger.info("=== Phase 2: Macro-Alignment (Mp3Quran API) ===")
         timing_url = f"https://mp3quran.net/api/v3/ayat_timing?surah={surah_id}&read={RECITERS_TIMING_ID[reciter_id]}"
@@ -426,6 +663,7 @@ def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
                     output_prefix=reciter_id, reciter_label=reciter_id,
                     allow_macro_retry=(attempt < MAX_MACRO_RETRIES),
                     is_last_ayah_of_surah=is_last_ayah_of_surah,
+                    min_match_ratio=RECITER_MIN_MATCH_RATIO,
                 )
                 break
             except MacroWindowTooNarrowError as e:
@@ -467,7 +705,8 @@ def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
 
 def extract_custom_clip(audio_path_str, surah_id, start_ayah, end_ayah, pad_seconds=0.0,
                          ayahs_text=None, output_prefix="custom", reciter_label="custom",
-                         allow_macro_retry=False, is_last_ayah_of_surah=False):
+                         allow_macro_retry=False, is_last_ayah_of_surah=False,
+                         min_match_ratio=0.15):
     import difflib
     import re
     audio_path = Path(audio_path_str)
@@ -533,7 +772,11 @@ def extract_custom_clip(audio_path_str, surah_id, start_ayah, end_ayah, pad_seco
                 best_start_idx = i
                 best_end_idx = j - 1
 
-    if best_ratio < 0.15 or target_len == 0:
+    # extract_clip() passes a stricter bar than the 0.15 default used for a
+    # user's own upload: its macro crop is supposed to contain the target, so
+    # a weak match means the crop is wrong -- fail loudly instead of returning
+    # some other passage (concretely observed: An-Nisa 27-28 / maher at 0.15).
+    if best_ratio < min_match_ratio or target_len == 0:
         _fail(f"Could not locate ayah {start_ayah}-{end_ayah} in the audio (best text match ratio: {best_ratio:.2f}). The audio may not actually contain this recitation, or its quality is too poor to transcribe.")
         
     strict_start = T_words_original[best_start_idx].start
