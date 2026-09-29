@@ -67,7 +67,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ### 4. Access the Application
 Once the containers are successfully running, you can access the services at:
 - **Frontend (UI)**: [http://localhost:3000](http://localhost:3000)
-- **Backend API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Backend API Docs**: [http://localhost:8001/docs](http://localhost:8001/docs)
 - **Postgres Database**: `localhost:5433` (User: `user`, Password: `password`, DB: `kurannuru`)
 - **Redis**: `localhost:6380`
 
@@ -83,7 +83,7 @@ docker compose down -v
 
 ## 📝 Notes
 - **GPU Usage**: The default `docker-compose.yml` does not require a GPU — Whisper automatically runs on the CPU (slower audio alignment, rendering is unaffected). Use `docker-compose.gpu.yml` as shown above to enable an NVIDIA GPU.
-- **Port Conflicts**: Ensure ports `3000`, `8000`, `5433`, and `6380` are not being used by other applications on your host machine.
+- **Port Conflicts**: Ensure ports `3000`, `8001`, `5433`, and `6380` are not being used by other applications on your host machine.
 
 ## 📄 License
 [MIT License](LICENSE)
