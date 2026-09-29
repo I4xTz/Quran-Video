@@ -51,7 +51,11 @@ services:
     # start (audio clips, merge intermediates) so it can never accumulate
     # across restarts -- saved drafts and the size-capped surah_cache are
     # untouched since those are real user data / already self-limiting.
-    command: sh -c "rm -rf /app/data/extracted_clips/* /app/data/temp_extraction/* /app/app/static/tmp/*/ 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    # No --reload: under the reloader a crashed worker is never restarted --
+    # the reloader keeps the port open and every request hangs forever.
+    # Without it a crash exits the container and `restart: on-failure`
+    # brings it back. (Restart the backend container after editing its code.)
+    command: sh -c "rm -rf /app/data/extracted_clips/* /app/data/temp_extraction/* /app/app/static/tmp/*/ 2>/dev/null; exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
     restart: on-failure
 
   frontend:

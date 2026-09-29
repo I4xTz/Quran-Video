@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
 import sys
+import threading
 from pathlib import Path
 import shutil
 
@@ -16,6 +17,48 @@ router = APIRouter(
     tags=["extract"],
 )
 
+# Every extraction transcribes/aligns with ONE shared, cached Whisper model
+# (see get_whisper_model) and is CPU/GPU-heavy. Running several at once --
+# e.g. opening a draft fires two preview renders plus "prepare audio" for
+# the same ayat -- killed the worker process mid-alignment with no
+# traceback, after which every request hung. So only one extraction runs at
+# a time, and an identical request arriving while one is in flight waits
+# for it and reuses its result instead of redoing the work.
+_extraction_lock = threading.Lock()
+_inflight = {}
+_inflight_lock = threading.Lock()
+
+
+def _run_exclusive(key, fn):
+    if key is None:
+        with _extraction_lock:
+            return fn()
+
+    with _inflight_lock:
+        entry = _inflight.get(key)
+        is_owner = entry is None
+        if is_owner:
+            entry = {"done": threading.Event(), "result": None, "error": None}
+            _inflight[key] = entry
+
+    if not is_owner:
+        entry["done"].wait()
+        if entry["error"] is not None:
+            raise entry["error"]
+        return entry["result"]
+
+    try:
+        with _extraction_lock:
+            entry["result"] = fn()
+        return entry["result"]
+    except BaseException as e:
+        entry["error"] = e
+        raise
+    finally:
+        with _inflight_lock:
+            _inflight.pop(key, None)
+        entry["done"].set()
+
 class ExtractRequest(BaseModel):
     surah: int
     start: int
@@ -26,7 +69,10 @@ class ExtractRequest(BaseModel):
 @router.post("/")
 def generate_clip(req: ExtractRequest):
     try:
-        result = extract_clip(req.reciter, req.surah, req.start, req.end, pad_seconds=req.pad_seconds)
+        key = (req.reciter, req.surah, req.start, req.end, req.pad_seconds)
+        result = _run_exclusive(
+            key, lambda: extract_clip(req.reciter, req.surah, req.start, req.end, pad_seconds=req.pad_seconds)
+        )
         if not result:
             raise HTTPException(status_code=400, detail="Failed to extract clip. Check logs.")
         
@@ -42,8 +88,12 @@ def generate_clip(req: ExtractRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Plain `def` (not async): the alignment below is long, blocking work, and
+# inside an `async def` it froze the whole event loop -- every other
+# request (even /api/surahs) hung until it finished. FastAPI runs a plain
+# `def` endpoint in its threadpool instead.
 @router.post("/custom")
-async def generate_custom_clip(
+def generate_custom_clip(
     surah: int = Form(...),
     start: int = Form(...),
     end: int = Form(...),
@@ -60,7 +110,10 @@ async def generate_custom_clip(
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(audio_file.file, buffer)
             
-        result = extract_custom_clip(str(temp_file_path), surah, start, end, pad_seconds=pad_seconds)
+        # Never deduplicated (each upload is different audio), only serialized.
+        result = _run_exclusive(
+            None, lambda: extract_custom_clip(str(temp_file_path), surah, start, end, pad_seconds=pad_seconds)
+        )
             
         if not result:
             raise HTTPException(status_code=400, detail="Failed to align custom clip. Check logs.")
