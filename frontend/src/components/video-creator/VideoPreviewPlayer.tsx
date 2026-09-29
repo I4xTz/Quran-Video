@@ -33,7 +33,16 @@ interface VideoPreviewPlayerProps {
   // (see QuranVideoProps.arabicOffsetY). Same segmentKey semantics as above.
   onArabicOffsetYChange?: (segmentKey: string | null, offset: number) => void;
   onTranslationOffsetYChange?: (segmentKey: string | null, offset: number) => void;
+  // Line-edit mode (see lineEdit below): the Arabic text's manual breaks
+  // (VerseMapping.arabic_line_breaks), and the translation text re-joined
+  // with "\n" at its manual breaks. Line editing is offered only when set.
+  onArabicLineBreaksChange?: (segmentKey: string, breaks: number[]) => void;
+  onTranslationLinesChange?: (segmentKey: string, text: string) => void;
 }
+
+// Line-edit mode: which block/segment is being edited, and the caret -- the
+// index of the word it sits BEFORE (words.length = after the last word).
+type LineEditState = { block: TextBlock; segmentKey: string; caret: number | null };
 
 type TextBlock = "arabic" | "translation";
 
@@ -184,6 +193,8 @@ export default function VideoPreviewPlayer({
   onTranslationWidthScaleChange,
   onArabicOffsetYChange,
   onTranslationOffsetYChange,
+  onArabicLineBreaksChange,
+  onTranslationLinesChange,
 }: VideoPreviewPlayerProps) {
   const { language } = useLanguage();
   const isArabic = language === "ar";
@@ -283,6 +294,13 @@ export default function VideoPreviewPlayer({
   // the same per-frame measurement loop below, since both change for the
   // same reason (playback advancing to a different segment).
   const [activeSegmentKeys, setActiveSegmentKeys] = useState<Record<TextBlock, string | null>>({ arabic: null, translation: null });
+  // Line-edit mode: click before a word, Enter = new line there, Backspace
+  // at a line start = join it back, arrows move the caret, Esc exits.
+  // caretRect is the caret's measured position (container percent), kept
+  // live by the same per-frame measurement loop as boxRects.
+  const [lineEdit, setLineEdit] = useState<LineEditState | null>(null);
+  const [caretRect, setCaretRect] = useState<BoxRect | null>(null);
+  const canEditLines = !!onArabicLineBreaksChange && !!onTranslationLinesChange;
 
   // Each falls back to inputProps.textScale (the older, shared field) so a
   // draft/render saved before these two were split independently still
@@ -568,17 +586,23 @@ export default function VideoPreviewPlayer({
   // real size visibly changes as a corner-drag changes font size, and which
   // verse/segment is on screen changes as the video plays.
   useEffect(() => {
-    if (!hoveredBlock && !dragging) return;
+    if (!hoveredBlock && !dragging && !lineEdit) return;
     let raf = 0;
     const tick = () => {
       setBoxRects({ arabic: measureBlock("arabic"), translation: measureBlock("translation") });
       setActiveSegmentKeys({ arabic: readSegmentKey("arabic"), translation: readSegmentKey("translation") });
+      if (lineEdit) {
+        // The segment being edited left the screen (seek/playback) --
+        // nothing on screen to edit anymore.
+        if (readSegmentKey(lineEdit.block) !== lineEdit.segmentKey) setLineEdit(null);
+        else setCaretRect(measureCaret(lineEdit));
+      }
       raf = requestAnimationFrame(tick);
     };
     tick();
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoveredBlock, dragging]);
+  }, [hoveredBlock, dragging, lineEdit]);
 
   // On a mouse, moving the pointer off the block (onMouseLeave, above) is
   // what dismisses its box -- there's no equivalent "left" event for a tap,
@@ -680,6 +704,180 @@ export default function VideoPreviewPlayer({
     currentFrameRef.current = frame;
     setCurrentFrame(frame);
   };
+
+  // ---- Line-edit mode -------------------------------------------------
+  // Works directly on the rendered text: QuranVideo.tsx wraps every word in
+  // a span tagged data-word-index (see its renderWordLines), in word order.
+  const wordSpansOf = (block: TextBlock): HTMLElement[] => {
+    const el = containerRef.current?.querySelector<HTMLElement>(`[data-text-block="${block}"]`);
+    return el ? Array.from(el.querySelectorAll<HTMLElement>("[data-word-index]")) : [];
+  };
+
+  // Every word that currently starts a new visual line (except the first
+  // word), read off the rendered layout -- whether the line came from an
+  // automatic wrap or an earlier manual break. Editing always starts from
+  // this, so adding/removing one break never reshuffles the other lines.
+  const visibleLineStarts = (block: TextBlock): number[] => {
+    const spans = wordSpansOf(block);
+    const starts: number[] = [];
+    for (let i = 1; i < spans.length; i++) {
+      const prev = spans[i - 1].getBoundingClientRect();
+      const cur = spans[i].getBoundingClientRect();
+      if (cur.top - prev.top > prev.height / 2) starts.push(i);
+    }
+    return starts;
+  };
+
+  // The caret position nearest a click: the closest word (same line first),
+  // then before or after it depending on which half was clicked -- the
+  // Arabic reads right-to-left, so its "before" side is the right half.
+  const caretFromPoint = (block: TextBlock, clientX: number, clientY: number): number | null => {
+    const spans = wordSpansOf(block);
+    if (spans.length === 0) return null;
+    let best = 0;
+    let bestDist = Infinity;
+    spans.forEach((span, i) => {
+      const r = span.getBoundingClientRect();
+      const dx = clientX < r.left ? r.left - clientX : clientX > r.right ? clientX - r.right : 0;
+      const dy = clientY < r.top ? r.top - clientY : clientY > r.bottom ? clientY - r.bottom : 0;
+      const dist = dy * 1000 + dx;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    });
+    const r = spans[best].getBoundingClientRect();
+    const inFirstHalf = block === "arabic" ? clientX > (r.left + r.right) / 2 : clientX < (r.left + r.right) / 2;
+    return inFirstHalf ? best : best + 1;
+  };
+
+  const measureCaret = (state: LineEditState): BoxRect | null => {
+    const container = containerRef.current;
+    const spans = wordSpansOf(state.block);
+    if (!container || state.caret === null || spans.length === 0) return null;
+    const rtl = state.block === "arabic";
+    const atEnd = state.caret >= spans.length;
+    const r = spans[Math.min(state.caret, spans.length - 1)].getBoundingClientRect();
+    // Leading edge of the word the caret sits before, or the trailing edge
+    // of the last word when it's past the end.
+    const x = atEnd ? (rtl ? r.left : r.right) : rtl ? r.right : r.left;
+    const c = container.getBoundingClientRect();
+    if (!c.width || !c.height) return null;
+    return {
+      left: ((x - c.left) / c.width) * 100,
+      top: ((r.top - c.top) / c.height) * 100,
+      width: 0,
+      height: (r.height / c.height) * 100,
+    };
+  };
+
+  const segmentTranslationText = (segmentKey: string): string | null => {
+    const [verseId, idx] = segmentKey.split(":").map(Number);
+    const verse = inputProps.verses.find((v) => v.id === verseId);
+    if (!verse) return null;
+    return verse.mappings?.[idx]?.translation_text ?? verse.translation;
+  };
+
+  // Enter ("add"): new line starting at the caret. Backspace ("remove"):
+  // moves the FIRST word of the caret's line (caret anywhere in that line)
+  // up to the end of the line above -- one word per press, so repeated
+  // presses pull the line up word by word until it fully rejoins. Starts
+  // from the layout currently on screen (see visibleLineStarts), so what
+  // the user sees is exactly what's kept, plus their one change.
+  const applyLineBreak = (state: LineEditState, op: "add" | "remove") => {
+    const n = wordSpansOf(state.block).length;
+    const caret = state.caret;
+    if (caret === null || n === 0) return;
+    const breaks = new Set(visibleLineStarts(state.block));
+    if (op === "add") {
+      if (caret <= 0 || caret >= n || breaks.has(caret)) return;
+      breaks.add(caret);
+    } else {
+      // Start of the caret's line: the last line start at or before the
+      // word the caret is on (past the end = on the last word's line).
+      const word = Math.min(caret, n - 1);
+      const lineStart = Math.max(0, ...Array.from(breaks).filter((b) => b <= word));
+      if (lineStart === 0) return; // already the first line
+      const lineEnd = Math.min(n, ...Array.from(breaks).filter((b) => b > lineStart));
+      breaks.delete(lineStart);
+      // The line keeps its remaining words (now starting one word later);
+      // a one-word line simply disappears into the one above.
+      const newLineStart = lineStart + 1;
+      if (newLineStart < lineEnd) breaks.add(newLineStart);
+      // A caret sitting at the line's start follows it, so the next press
+      // pulls up the next word.
+      if (caret === lineStart && newLineStart < lineEnd) setLineEdit({ ...state, caret: newLineStart });
+    }
+
+    if (state.block === "arabic") {
+      onArabicLineBreaksChange?.(state.segmentKey, Array.from(breaks).sort((a, b) => a - b));
+      return;
+    }
+    const text = segmentTranslationText(state.segmentKey);
+    const words = text?.split(/\s+/).filter(Boolean) ?? [];
+    // The rendered spans are exactly these words (same tokenization, see
+    // QuranVideo.tsx's renderWordLines) -- bail rather than guess if not.
+    if (words.length !== n) return;
+    onTranslationLinesChange?.(
+      state.segmentKey,
+      words.map((w, i) => (i === 0 ? "" : breaks.has(i) ? "\n" : " ") + w).join("")
+    );
+  };
+
+  const toggleLineEdit = (block: TextBlock) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    // Otherwise the button keeps focus and the next Enter would "click" it
+    // again (exiting) instead of inserting a line break.
+    e.currentTarget.blur();
+    if (lineEdit?.block === block) {
+      setLineEdit(null);
+      return;
+    }
+    const segmentKey = readSegmentKey(block);
+    if (!segmentKey) return;
+    if (playerRef.current?.isPlaying()) togglePlay();
+    setLineEdit({ block, segmentKey, caret: null });
+  };
+
+  useEffect(() => {
+    if (!lineEdit) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setLineEdit(null);
+        return;
+      }
+      if (lineEdit.caret === null) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyLineBreak(lineEdit, "add");
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        applyLineBreak(lineEdit, "remove");
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        // Forward = toward the text's end: rightward for the translation,
+        // leftward for the right-to-left Arabic.
+        const forward = (e.key === "ArrowRight") !== (lineEdit.block === "arabic");
+        const n = wordSpansOf(lineEdit.block).length;
+        setLineEdit({ ...lineEdit, caret: Math.max(0, Math.min(n, lineEdit.caret + (forward ? 1 : -1))) });
+      }
+    };
+    const onPointerDownOutside = (e: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setLineEdit(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDownOutside);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDownOutside);
+    };
+    // applyLineBreak/wordSpansOf read inputProps and the callbacks fresh on
+    // every render; re-subscribing on those changes is what keeps them current.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lineEdit, inputProps, onArabicLineBreaksChange, onTranslationLinesChange]);
 
   // Resolves EITHER the currently-hovered/dragged segment's own override
   // (see VerseMapping's per-segment scale fields in types.ts) or, when
@@ -848,7 +1046,8 @@ export default function VideoPreviewPlayer({
     const centerTop = centerTopOf(block);
     const scale = textScaleOf(block, activeSegmentKeys[block]);
     const widthScale = widthScaleOf(block, activeSegmentKeys[block]);
-    const isActive = hoveredBlock === block || dragging?.block === block;
+    const isEditingLines = lineEdit?.block === block;
+    const isActive = hoveredBlock === block || dragging?.block === block || isEditingLines;
     const box = boxRects[block];
     const otherBox = boxRects[block === "arabic" ? "translation" : "arabic"];
     const accentBorder = layout.accent === "amber" ? "border-accent-amber" : "border-primary-light";
@@ -978,7 +1177,58 @@ export default function VideoPreviewPlayer({
           // moment the pointer actually leaves and re-enters.
           onClick={() => setHoveredBlock((v) => (v === block ? null : block))}
         />
-        {isActive && box && (
+        {isActive && box && isEditingLines && (
+          <>
+            <div
+              className={`pointer-events-none absolute rounded-sm border ${accentBorder}`}
+              style={{
+                top: `${toRegionY(outlineTop)}%`,
+                bottom: `${100 - toRegionY(outlineBottom)}%`,
+                left: `${toRegionX(box.left - BOX_PADDING_PERCENT)}%`,
+                right: `${100 - toRegionX(box.left + box.width + BOX_PADDING_PERCENT)}%`,
+              }}
+            />
+            {/* Click anywhere on the text to place the caret (see
+                caretFromPoint) -- replaces the move/resize handles while
+                editing lines, so a click can never start a drag instead. */}
+            <div
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const caret = caretFromPoint(block, e.clientX, e.clientY);
+                setLineEdit((s) => (s ? { ...s, caret } : s));
+              }}
+              className="absolute cursor-text"
+              style={{
+                top: `${toRegionY(outlineTop)}%`,
+                bottom: `${100 - toRegionY(outlineBottom)}%`,
+                left: `${toRegionX(box.left - BOX_PADDING_PERCENT)}%`,
+                right: `${100 - toRegionX(box.left + box.width + BOX_PADDING_PERCENT)}%`,
+              }}
+            />
+          </>
+        )}
+        {isActive && box && canEditLines && !dragging && (
+          <button
+            type="button"
+            onClick={toggleLineEdit(block)}
+            className={`absolute z-[3] -translate-y-1/2 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm transition-colors ${
+              isEditingLines ? `${accentBg} border-transparent text-black` : `bg-black/60 ${accentBorder}/70 hover:bg-black/80`
+            }`}
+            style={{
+              top: `${toRegionY(outlineTop)}%`,
+              left: `${toRegionX(box.left - BOX_PADDING_PERCENT)}%`,
+            }}
+            title={
+              isArabic
+                ? "تعديل الأسطر: انقر قبل كلمة ثم Enter لسطر جديد"
+                : "Satırları düzenle: bir kelimenin önüne tıklayıp Enter'a basın"
+            }
+          >
+            {isEditingLines ? (isArabic ? "✓ تم" : "✓ Bitti") : isArabic ? "↵ أسطر" : "↵ Satırlar"}
+          </button>
+        )}
+        {isActive && box && !isEditingLines && (
           <>
             <div
               className={`pointer-events-none absolute rounded-sm border border-dashed ${accentBorder}/70`}
@@ -1114,6 +1364,22 @@ export default function VideoPreviewPlayer({
 
         {renderTextBlockControl("arabic")}
         {renderTextBlockControl("translation")}
+
+        {lineEdit && (
+          <>
+            <div className="pointer-events-none absolute inset-x-2 top-2 z-[4] rounded-lg bg-black/75 px-2.5 py-1.5 text-center text-[11px] leading-relaxed text-white/90" dir={isArabic ? "rtl" : "ltr"}>
+              {isArabic
+                ? "انقر قبل كلمة، ثم Enter لنقلها لسطر جديد • Backspace يرجع أول كلمة في السطر للسطر الذي قبله • Esc للخروج"
+                : "Bir kelimenin önüne tıklayın, Enter ile yeni satıra alın • Backspace satırın ilk kelimesini önceki satıra taşır • Esc ile çıkın"}
+            </div>
+            {caretRect && (
+              <div
+                className="pointer-events-none absolute z-[4] w-0.5 -translate-x-1/2 animate-pulse rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.8)]"
+                style={{ left: `${caretRect.left}%`, top: `${caretRect.top}%`, height: `${caretRect.height}%` }}
+              />
+            )}
+          </>
+        )}
 
         {/* pointer-events-none on the wrapper: this bar is painted AFTER (on
             top of) the two text-block hover/drag regions above, so without

@@ -27,12 +27,27 @@ export type VerseMapping = {
   // it always slices whichever of verse.text/textV1 matches the CURRENTLY
   // selected font.
   arabic_text?: string;
-  // Which EARLIER segment (1-based `part` number, same ayah) this one is a
-  // "repeat" of -- see arabic_text above. Set once by
-  // VideoCreatorForm.tsx's handleSaveTimingEditor from SegmentTimingEditor's
-  // own repeatOfId, translated into a part number stable across the
-  // session-local ids SegmentTimingEditor regenerates on every reopen.
+  // 0-based index of this segment's first REAL word within the ayah. With
+  // word_count, the segment's OWN word range -- every segment picks its
+  // words independently (no cumulative cursor), so segments can re-display
+  // earlier words, skip some, or be deleted without shifting any other
+  // segment's text. Written by handleSaveTimingEditor for every segment;
+  // absent only in data saved before this existed, which is resolved with
+  // the old cumulative rule (see buildTimingEditorSegments).
+  word_start?: number;
+  // Label only: the segment was created with the timing editor's duplicate
+  // button. In data saved before word_start existed it also meant "doesn't
+  // advance the cumulative word cursor".
+  is_repeat?: boolean;
+  // Legacy (read-only) fields from earlier repeat/delete schemes -- only
+  // still read so older saved drafts load correctly:
+  // - repeat_word_start: a repeat's first word, before word_start existed.
+  // - repeat_of_part: the 1-based `part` a repeat used to mirror.
+  // - is_skipped: a deleted segment that kept a blank time slot; dropped on
+  //   load (its time goes to a neighbor) and never rendered.
+  repeat_word_start?: number;
   repeat_of_part?: number;
+  is_skipped?: boolean;
   // Whether this segment displays the ayah number before its translation.
   // Tied to the segment's own content/origin (set once when the segment is
   // first created, then carried through duplicate/split/merge in
@@ -60,6 +75,12 @@ export type VerseMapping = {
   // scale fields above (see QuranVideoProps' arabicOffsetY).
   arabicOffsetY?: number;
   translationOffsetY?: number;
+  // Manual line breaks in this segment's Arabic text: each entry is the
+  // index (into its space-separated words) of a word that STARTS a new line.
+  // Placed in VideoPreviewPlayer's line-edit mode; a line still wraps
+  // further if it's too long for the current width. The translation's own
+  // manual breaks live directly in translation_text as "\n" instead.
+  arabic_line_breaks?: number[];
 };
 
 export type WordTiming = {

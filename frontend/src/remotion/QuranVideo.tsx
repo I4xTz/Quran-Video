@@ -207,6 +207,50 @@ function wrapWordsToFit(words: string[], maxLineChars: number, firstLineExtraLen
   return lines;
 }
 
+// Renders already-decided lines with every word wrapped in its own span,
+// tagged data-word-index (running across all lines, same order as
+// `text.split(/\s+/).filter(Boolean)`), so VideoPreviewPlayer's line-edit
+// mode can tell exactly which word a click landed on. Visually identical to
+// the plain "words joined by spaces, <br/> between lines" it replaces --
+// the spans carry no styling.
+function renderWordLines(lines: string[]): React.ReactNode {
+  let wordIndex = 0;
+  return (
+    <>
+      {lines.map((line, lineIdx) => {
+        const words = line.split(" ").filter(Boolean);
+        return (
+          <React.Fragment key={lineIdx}>
+            {words.map((word, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && " "}
+                <span data-word-index={wordIndex++}>{word}</span>
+              </React.Fragment>
+            ))}
+            {lineIdx < lines.length - 1 && <br />}
+          </React.Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+// Splits words into manual line groups at `breaks` (each = index of the
+// word that STARTS a new line, see VerseMapping.arabic_line_breaks). Out-of-
+// range/duplicate indices are ignored, so a break list that outlived a
+// change to the segment's words can never crash or drop text.
+function splitAtBreaks(words: string[], breaks: number[]): string[][] {
+  const valid = Array.from(new Set(breaks.filter((b) => Number.isInteger(b) && b > 0 && b < words.length))).sort((a, b) => a - b);
+  const groups: string[][] = [];
+  let start = 0;
+  for (const b of valid) {
+    groups.push(words.slice(start, b));
+    start = b;
+  }
+  groups.push(words.slice(start));
+  return groups;
+}
+
 function formatInvertedPyramid(text: string, forceTwoLines = true, textScale = 1, prefixLength = 0, textWidthScale = 1): React.ReactNode {
   if (!text) return null;
 
@@ -251,7 +295,7 @@ function formatInvertedPyramid(text: string, forceTwoLines = true, textScale = 1
       forceTwoLines = false;
     }
 
-    if (words.length <= 4 && forceTwoLines === false) return text;
+    if (words.length <= 4 && forceTwoLines === false) return renderWordLines([text]);
 
     const totalChars = text.length + prefixLength;
     const MAX_LINES = words.length;
@@ -263,27 +307,18 @@ function formatInvertedPyramid(text: string, forceTwoLines = true, textScale = 1
     // fits within the (larger) budget is free to collapse back down, even to
     // a single line -- that's the entire point of the widen control.
     if (forceTwoLines && textWidthScale <= 1 && numLines < 2) numLines = 2;
-    if (!forceTwoLines && numLines < 2) return text;
+    if (!forceTwoLines && numLines < 2) return renderWordLines([text]);
     numLines = Math.max(1, Math.min(numLines, MAX_LINES, words.length));
 
     lines = wrapWordsToFit(words, MAX_LINE_CHARS, prefixLength, numLines);
   }
 
-  return (
-    <>
-      {lines.map((line, index) => (
-        <React.Fragment key={index}>
-          {line}
-          {index < lines.length - 1 && <br />}
-        </React.Fragment>
-      ))}
-    </>
-  );
+  return renderWordLines(lines);
 }
 
-function formatArabicVerse(text: string, arabicWidthScale = 1): React.ReactNode {
+function formatArabicVerse(text: string, arabicWidthScale = 1, lineBreaks?: number[]): React.ReactNode {
   if (!text) return null;
-  const words = text.split(" ");
+  const words = text.split(" ").filter(Boolean);
 
   const totalWords = words.length;
   // A single line fits about 6 to 7 PUA words on mobile before wrapping
@@ -296,6 +331,23 @@ function formatArabicVerse(text: string, arabicWidthScale = 1): React.ReactNode 
   const baseMaxWordsPerLine = 8;
   const maxWordsPerLine = Math.max(2, Math.round(baseMaxWordsPerLine * arabicWidthScale));
 
+  // Manual line breaks (placed in VideoPreviewPlayer's line-edit mode, see
+  // VerseMapping.arabic_line_breaks): each group is its own line verbatim --
+  // same rule as formatInvertedPyramid's manual "\n" branch -- and is only
+  // wrapped further if it's longer than the current width allows.
+  if (lineBreaks && lineBreaks.length > 0) {
+    const lines = splitAtBreaks(words, lineBreaks).flatMap((group) => {
+      if (group.length <= maxWordsPerLine) return [group.join(" ")];
+      let idx = 0;
+      return distributeCountsNonIncreasing(group.length, Math.ceil(group.length / maxWordsPerLine)).map((count) => {
+        const line = group.slice(idx, idx + count).join(" ");
+        idx += count;
+        return line;
+      });
+    });
+    return renderWordLines(lines);
+  }
+
   // "Return as a single line" is the original, unchanged behavior at/above
   // the default width -- exactly like formatInvertedPyramid's identical
   // check for the translation. Below it, even an originally-short verse
@@ -303,7 +355,7 @@ function formatArabicVerse(text: string, arabicWidthScale = 1): React.ReactNode 
   // the default width can now qualify too, since maxWordsPerLine itself
   // grew with the widening.
   if (totalWords <= maxWordsPerLine && arabicWidthScale >= 1) {
-    return text;
+    return renderWordLines([words.join(" ")]);
   }
 
   // No artificial ceiling below the actual word count -- narrowed far
@@ -334,16 +386,7 @@ function formatArabicVerse(text: string, arabicWidthScale = 1): React.ReactNode 
     numLines++;
   }
 
-  return (
-    <>
-      {lines.map((line, index) => (
-        <React.Fragment key={index}>
-          {line}
-          {index < lines.length - 1 && <br />}
-        </React.Fragment>
-      ))}
-    </>
-  );
+  return renderWordLines(lines);
 }
 
 function VerseScene({
@@ -365,6 +408,7 @@ function VerseScene({
   arabicTop = 0,
   arabicOffsetY = 0,
   translationOffsetY = 0,
+  arabicLineBreaks,
 }: {
   text: string;
   translation: string;
@@ -418,6 +462,9 @@ function VerseScene({
   // wrapping and horizontal centering stay exactly as they were.
   arabicOffsetY?: number;
   translationOffsetY?: number;
+  // Manual Arabic line breaks for this segment -- see
+  // VerseMapping.arabic_line_breaks in types.ts.
+  arabicLineBreaks?: number[];
 }) {
   const frame = useCurrentFrame();
   const { height: canvasHeight } = useVideoConfig();
@@ -495,7 +542,7 @@ function VerseScene({
             transform: `translateY(${arabicShiftPx - arabicTop}px)`, // اطار اليوتيوب
           }}
         >
-          {formatArabicVerse(text, arabicWidthScale)}
+          {formatArabicVerse(text, arabicWidthScale, arabicLineBreaks)}
         </div>
         {translation ? (
           <div
@@ -557,7 +604,7 @@ function VerseScene({
             transform: `translateY(${arabicShiftPx}px)`,
           }}
         >
-          {formatArabicVerse(text, arabicWidthScale)}
+          {formatArabicVerse(text, arabicWidthScale, arabicLineBreaks)}
         </div>
       </div>
 
@@ -1035,6 +1082,9 @@ export function QuranVideo({
                     ];
 
               return mappings.map((mapping, idx) => {
+                // Legacy blank-slot delete (see VerseMapping.is_skipped):
+                // nothing on screen for its time slot.
+                if (mapping.is_skipped) return null;
                 const totalWords = mappings.reduce((sum, m) => sum + m.word_count, 0);
                 const previousWords = mappings.slice(0, idx).reduce((sum, m) => sum + m.word_count, 0);
 
@@ -1048,8 +1098,11 @@ export function QuranVideo({
                   ? d - chunkStartFrame
                   : Math.round((mapping.word_count / totalWords) * d);
 
-                const startWordIdx = previousWords;
-                const endWordIdx = previousWords + mapping.word_count - 1;
+                // A segment's own range when saved (word_start -- segments
+                // pick their words independently), else the old cumulative
+                // position.
+                const startWordIdx = mapping.word_start ?? previousWords;
+                const endWordIdx = startWordIdx + mapping.word_count - 1;
 
                 if (
                   (!globalAudioPath || isAudioExtracted) &&
@@ -1104,7 +1157,7 @@ export function QuranVideo({
                   // page-glyph text where one real word can span >1 whitespace
                   // token. Falls back to a 1:1 assumption when unavailable.
                   let puaStart = startWordIdx;
-                  let puaEnd = previousWords + mapping.word_count;
+                  let puaEnd = startWordIdx + mapping.word_count;
                   if (arabicVersePuaTokenCounts && arabicVersePuaTokenCounts.length === totalWords) {
                     puaStart = arabicVersePuaTokenCounts.slice(0, startWordIdx).reduce((a, b) => a + b, 0);
                     puaEnd = puaStart + arabicVersePuaTokenCounts.slice(startWordIdx, startWordIdx + mapping.word_count).reduce((a, b) => a + b, 0);
@@ -1184,6 +1237,7 @@ export function QuranVideo({
                       arabicTop={arabicTop}
                       arabicOffsetY={mappingArabicOffsetY}
                       translationOffsetY={mappingTranslationOffsetY}
+                      arabicLineBreaks={mapping.arabic_line_breaks}
                     />
                   </Sequence>
                 );

@@ -62,6 +62,8 @@ interface Step5Props {
   // Vertical-only drag of each text block (percent of canvas height).
   onArabicOffsetYChange: (segmentKey: string | null, offset: number) => void;
   onTranslationOffsetYChange: (segmentKey: string | null, offset: number) => void;
+  onArabicLineBreaksChange?: (segmentKey: string, breaks: number[]) => void;
+  onTranslationLinesChange?: (segmentKey: string, text: string) => void;
   // Background image/video opacity (0..1) -- see QuranVideoProps.
   backgroundOpacity: number;
   onBackgroundOpacityChange: (opacity: number) => void;
@@ -332,6 +334,8 @@ export default function Step5Generate({
   onTranslationWidthScaleChange,
   onArabicOffsetYChange,
   onTranslationOffsetYChange,
+  onArabicLineBreaksChange,
+  onTranslationLinesChange,
   backgroundOpacity,
   onBackgroundOpacityChange,
   showSurahNameArabic,
@@ -397,6 +401,8 @@ export default function Step5Generate({
             onTranslationWidthScaleChange={onTranslationWidthScaleChange}
             onArabicOffsetYChange={onArabicOffsetYChange}
             onTranslationOffsetYChange={onTranslationOffsetYChange}
+            onArabicLineBreaksChange={onArabicLineBreaksChange}
+            onTranslationLinesChange={onTranslationLinesChange}
           />
           {/* Small non-blocking badge instead of hiding the whole player --
               a text/timing-only edit still triggers a background refresh

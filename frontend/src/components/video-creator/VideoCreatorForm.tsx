@@ -12,7 +12,7 @@ import Spinner from "@/components/ui/Spinner";
 
 import { useTranslationContext } from "@/lib/TranslationContext";
 import SegmentTimingEditor, { type SegmentTimingInput, type SegmentTimingResult } from "./SegmentTimingEditor";
-import { TRANSLATION_FONT_OPTIONS, type ArabicFontKey, type AspectRatio, type QualityTier, type QuranVideoProps, type TranslationFontKey } from "@/remotion/types";
+import { TRANSLATION_FONT_OPTIONS, type ArabicFontKey, type AspectRatio, type QualityTier, type QuranVideoProps, type TranslationFontKey, type VerseMapping } from "@/remotion/types";
 import { type WizardStepMeta } from "./wizard/WizardShell";
 import Step1SurahVerse from "./wizard/Step1SurahVerse";
 import Step2Background from "./wizard/Step2Background";
@@ -918,15 +918,18 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   // same editor session can target a stale index until "حفظ التوقيت" is
   // pressed and rebuilds it properly; a live preview nicety, not the
   // authoritative save.
-  const handleLiveTranslationEdit = (ayah: number, part: number, text: string) => {
-    const idx = part - 1;
+  const handleLiveTranslationEdit = (ayah: number, part: number, text: string) =>
+    patchSegmentMapping(ayah, part - 1, { translation_text: text });
 
-    // Same materialization as applySegmentScaleChange above -- a verse
-    // that's never been segmented or resized has no mapping slot of its own
-    // yet in either previewProps or pendingSegmentationData, so there'd be
-    // nowhere to patch this text into (the edit would just silently not
-    // show up live, though "حفظ التوقيت" would still save it correctly
-    // regardless, since it rebuilds mappings from scratch).
+  // Patches arbitrary fields of one segment's mapping (ayah + 0-based
+  // mapping index) in both previewProps (live, right now) and
+  // pendingSegmentationData (durable) -- shared by the timing editor's
+  // live translation edits and the preview's line-edit mode.
+  // Same materialization as applySegmentScaleChange above -- a verse
+  // that's never been segmented or resized has no mapping slot of its own
+  // yet in either previewProps or pendingSegmentationData, so there'd be
+  // nowhere to patch into (the edit would just silently not show up).
+  const patchSegmentMapping = (ayah: number, idx: number, patch: Partial<VerseMapping>) => {
     setPreviewProps((prev) => {
       if (!prev) return prev;
       return {
@@ -934,15 +937,16 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
         verses: prev.verses.map((v) => {
           if (v.id !== ayah) return v;
           if (v.mappings && v.mappings.length > 0) {
-            return { ...v, mappings: v.mappings.map((m, i) => (i === idx ? { ...m, translation_text: text } : m)) };
+            return { ...v, mappings: v.mappings.map((m, i) => (i === idx ? { ...m, ...patch } : m)) };
           }
           return {
             ...v,
             mappings: [
               {
                 part: 1,
-                translation_text: text,
+                translation_text: v.translation,
                 word_count: v.wordTimings?.length ?? v.text.trim().split(/\s+/).length,
+                ...patch,
               },
             ],
           };
@@ -955,7 +959,7 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
       if (existingIdx !== -1) {
         return prev.map((entry, i) =>
           i === existingIdx
-            ? { ...entry, mappings: entry.mappings.map((m: any, mi: number) => (mi === idx ? { ...m, translation_text: text } : m)) }
+            ? { ...entry, mappings: entry.mappings.map((m: any, mi: number) => (mi === idx ? { ...m, ...patch } : m)) }
             : entry
         );
       }
@@ -966,10 +970,27 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
         {
           surah: selectedSurah.id,
           ayah,
-          mappings: [{ part: 1, translation_text: text, word_count: verse.text.trim().split(/\s+/).length }],
+          mappings: [{ part: 1, translation_text: verse.translation || "", word_count: verse.text.trim().split(/\s+/).length, ...patch }],
         },
       ];
     });
+  };
+
+  // VideoPreviewPlayer's line-edit mode -- segmentKey is QuranVideo's own
+  // `${verseId}:${mappingIdx}` (see its data-segment-key).
+  const parseSegmentKey = (segmentKey: string): [number, number] | null => {
+    const [verseIdStr, idxStr] = segmentKey.split(":");
+    const verseId = Number(verseIdStr);
+    const idx = Number(idxStr);
+    return Number.isFinite(verseId) && Number.isFinite(idx) ? [verseId, idx] : null;
+  };
+  const handleArabicLineBreaksChange = (segmentKey: string, breaks: number[]) => {
+    const parsed = parseSegmentKey(segmentKey);
+    if (parsed) patchSegmentMapping(parsed[0], parsed[1], { arabic_line_breaks: breaks });
+  };
+  const handleTranslationLinesChange = (segmentKey: string, text: string) => {
+    const parsed = parseSegmentKey(segmentKey);
+    if (parsed) patchSegmentMapping(parsed[0], parsed[1], { translation_text: text });
   };
 
   // Runs `fn` only after any real render already queued/running for this
@@ -1916,6 +1937,27 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     return coreWords.join(" ");
   };
 
+  // Real (Uthmani) word count of one ayah -- the word map when loaded (the
+  // basis apply/route.ts validates against), else Whisper's own word count.
+  const getAyahRealWordCount = (ayahId: number, puaTokenCountsOverride?: Record<number, number[]>): number | null =>
+    (puaTokenCountsOverride ?? puaTokenCountsByAyah)[ayahId]?.length ??
+    preparedJsonData?.verses?.[String(ayahId)]?.words?.length ??
+    null;
+
+  // SegmentTimingEditor's getAyahWordRange -- any real-word range of an
+  // ayah as Arabic text/page for the CURRENTLY selected arabicFont, used to
+  // grow/shrink a repeat segment's own range word by word.
+  const getAyahWordRange = (ayahId: number, start: number, count: number) => {
+    const verse = selectedVersesContent.find((v) => v.id === ayahId);
+    const totalWords = getAyahRealWordCount(ayahId);
+    if (!verse || !totalWords || start < 0 || count < 1 || start + count > totalWords) return null;
+    return {
+      arabicText: sliceArabicForWordRange(verse, start, count, totalWords),
+      page: arabicFont === "qcf1" ? verse.pageV1 ?? verse.page : verse.page,
+      totalWords,
+    };
+  };
+
   // Builds the initial region bounds (in seconds, relative to whatever
   // getTimingEditorAudioUrl() returns) for every mapping of one ayah: reuses
   // any previously-saved manual start_ms/end_ms if present, otherwise
@@ -1990,6 +2032,7 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
           translation_text: verse.translation || "",
           arabicText,
           wordCount: realWordCount,
+          wordStart: 0,
           page: isQcf1 ? verse.pageV1 ?? verse.page : verse.page,
           startSec: Math.max(0, startSec),
           endSec: Math.max(0, endSec),
@@ -1998,38 +2041,81 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
         continue;
       }
 
-      // A "repeat" mapping (repeat_of_part set) re-displays an EARLIER
-      // mapping's own words -- it doesn't consume any new words of the
-      // ayah, so it must be excluded from both the total (otherwise every
-      // segment after it would be computed as if the ayah had more real
-      // words than it does) and the running cursor below (otherwise its
-      // word range, and every later segment's, drifts past the ayah's
-      // actual last word and slices out empty Arabic text).
-      const totalWordCount = segmentation.mappings.reduce(
-        (sum: number, m: any) => sum + (typeof m.repeat_of_part === "number" ? 0 : m.word_count),
+      // Every segment owns its word range (see SegmentTimingInput.wordStart),
+      // saved as `word_start`. Data saved before that is resolved the old
+      // way: a running cursor over the non-repeat mappings -- a "repeat"
+      // (is_repeat, or the older repeat_of_part) re-displays words the ayah
+      // already covered and never advances it -- and a repeat's own start
+      // from its repeat_word_start / repeat_of_part / its saved text located
+      // in the ayah.
+      const isRepeatMappingOf = (m: any) => m.is_repeat === true || typeof m.repeat_of_part === "number";
+      const allHaveWordStart = segmentation.mappings.every((m: any) => typeof m.word_start === "number");
+      const legacyWordCount = segmentation.mappings.reduce(
+        (sum: number, m: any) => sum + (isRepeatMappingOf(m) ? 0 : m.word_count),
         0
       );
+      // The ayah's REAL word count -- the word map when loaded, else (only
+      // meaningful for old cursor-based data) the cursor total.
+      const totalWordCount = puaMap[ayahId]?.length ?? (allHaveWordStart ? words.length : legacyWordCount);
+      // First word of every non-repeat legacy mapping, by part -- resolves a
+      // legacy repeat_of_part into the word range it used to mirror.
+      const partWordStart = new Map<number, number>();
+      segmentation.mappings.reduce((cursor: number, m: any) => {
+        if (isRepeatMappingOf(m)) return cursor;
+        partWordStart.set(m.part, cursor);
+        return cursor + m.word_count;
+      }, 0);
+      // Undefined when no source works -- that segment's saved text is then
+      // shown as-is and its range buttons stay disabled.
+      const resolveWordStart = (m: any, cursorStart: number): number | undefined => {
+        const count = m.word_count;
+        const fits = (s: unknown): s is number =>
+          typeof s === "number" && s >= 0 && s + count <= totalWordCount;
+        if (fits(m.word_start)) return m.word_start;
+        if (!isRepeatMappingOf(m)) return fits(cursorStart) ? cursorStart : undefined;
+        if (fits(m.repeat_word_start)) return m.repeat_word_start;
+        if (typeof m.repeat_of_part === "number") {
+          const s = partWordStart.get(m.repeat_of_part);
+          if (fits(s)) return s;
+        }
+        if (typeof m.arabic_text === "string" && m.arabic_text.length > 0) {
+          for (let s = 0; s + count <= totalWordCount; s++) {
+            if (sliceArabicForWordRange(verse, s, count, totalWordCount, puaMap) === m.arabic_text) return s;
+          }
+        }
+        return undefined;
+      };
       let wordCursor = 0;
+      // Time of a legacy `is_skipped` mapping (an earlier, blank-slot style
+      // of deleting) that had no segment before it to absorb it.
+      let carriedStartSec: number | null = null;
       segmentation.mappings.forEach((mapping: any) => {
-        const isRepeatMapping = typeof mapping.repeat_of_part === "number";
-        const startWordIdx = wordCursor;
-        const endWordIdx = Math.min(wordCursor + mapping.word_count - 1, words.length - 1);
-        // Trust the saved arabic_text verbatim ONLY for a repeat mapping --
-        // same reasoning and same rule as QuranVideo.tsx's own chunkText
-        // (see VerseMapping's comment in types.ts): re-deriving live via
-        // sliceArabicForWordRange is correct for every OTHER segment and,
-        // unlike the frozen saved text, always matches the CURRENTLY
-        // selected arabicFont instead of whichever one was picked when this
-        // was last saved.
+        const cursorStart = wordCursor;
+        if (!isRepeatMappingOf(mapping)) wordCursor += mapping.word_count;
+        const wordStart = resolveWordStart(mapping, cursorStart);
+        const startWordIdx = wordStart ?? cursorStart;
+        const endWordIdx = Math.min(startWordIdx + mapping.word_count - 1, words.length - 1);
+        // Re-derived live via sliceArabicForWordRange -- which, unlike the
+        // frozen saved arabic_text, always matches the CURRENTLY selected
+        // arabicFont (see VerseMapping's comment in types.ts). Only a
+        // segment whose range couldn't be recovered falls back to its saved
+        // text verbatim.
         const arabicText =
-          isRepeatMapping && typeof mapping.arabic_text === "string" && mapping.arabic_text.length > 0
-            ? mapping.arabic_text
-            : sliceArabicForWordRange(verse, startWordIdx, mapping.word_count, totalWordCount, puaMap);
-        if (!isRepeatMapping) wordCursor += mapping.word_count;
+          wordStart !== undefined
+            ? sliceArabicForWordRange(verse, wordStart, mapping.word_count, totalWordCount, puaMap)
+            : typeof mapping.arabic_text === "string" ? mapping.arabic_text : "";
 
         const hasManual = typeof mapping.start_ms === "number" && typeof mapping.end_ms === "number";
         const startSec = hasManual ? mapping.start_ms / 1000 : (words[startWordIdx]?.start ?? 0) / 1000;
         const endSec = hasManual ? mapping.end_ms / 1000 : (words[endWordIdx]?.end ?? words[words.length - 1].end) / 1000;
+
+        // Legacy deleted-but-kept segment: dropped now, its time given to
+        // the segment before it (or the next one), exactly like a delete.
+        if (mapping.is_skipped === true) {
+          if (allSegments.length > 0) allSegments[allSegments.length - 1].endSec = Math.max(0, endSec);
+          else carriedStartSec = startSec;
+          return;
+        }
 
         if (allSegments.length === 0) firstSegHasManualTiming = hasManual;
         lastSegHasManualTiming = hasManual;
@@ -2040,15 +2126,16 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
           translation_text: mapping.translation_text,
           arabicText,
           wordCount: mapping.word_count,
+          wordStart,
           page: isQcf1 ? verse.pageV1 ?? verse.page : verse.page,
-          startSec: Math.max(0, startSec),
+          startSec: Math.max(0, carriedStartSec ?? startSec),
           endSec: Math.max(0, endSec),
-          // Prefer the persisted value (a duplicated first-of-ayah segment
-          // keeps it, even though it isn't at part 1) -- only fall back to
-          // the positional guess for older saved data without this field.
+          // Prefer the persisted value -- only fall back to the positional
+          // guess for older saved data without this field.
           isFirstOfAyah: typeof mapping.isFirstOfAyah === "boolean" ? mapping.isFirstOfAyah : mapping.part === 1,
-          ...(isRepeatMapping ? { repeatOfId: `${ayahId}-${mapping.repeat_of_part}` } : {}),
+          ...(isRepeatMappingOf(mapping) ? { isRepeat: true } : {}),
         });
+        carriedStartSec = null;
       });
     }
 
@@ -2213,13 +2300,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
       );
       for (const [ayahIdStr, ayahResults] of Object.entries(resultsByAyah)) {
         const ayahId = Number(ayahIdStr);
-        // Session-local SegmentTimingResult.id -> its new (1-based) part
-        // number, so a "repeat" segment's repeatOfId (also a session-local
-        // id) can be translated into a `repeat_of_part` reference that's
-        // still valid once ids are regenerated fresh on the next reopen --
-        // see buildTimingEditorSegments below, which resolves it back into
-        // a fresh id of that same shape (`${ayahId}-${part}`).
-        const idToPart = new Map(ayahResults.map((r, idx) => [r.id, idx + 1]));
         // Per-segment size/width overrides (see VerseMapping's own scale
         // fields in types.ts, set via VideoPreviewPlayer's resize boxes)
         // live on the OLD mapping objects this rebuild is about to replace
@@ -2255,17 +2335,15 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
               start_ms: Math.round((result.startSec + previewOffsetSec) * 1000),
               end_ms: Math.round((result.endSec + previewOffsetSec) * 1000),
               // The editor already resolved the exact Arabic text for this
-              // segment (including "repeat" segments, whose real-word range
-              // isn't the next sequential one -- see SegmentTimingEditor's
-              // resolveContent). Passing it through verbatim instead of
-              // letting QuranVideo.tsx re-derive it from cumulative
-              // word_count is what makes repeats (and any future segment
-              // whose word range isn't sequential) render the correct text.
+              // segment from its OWN word range (see SegmentTimingInput's
+              // wordStart) -- ranges are independent, not sequential, so
+              // passing it through verbatim instead of letting QuranVideo.tsx
+              // re-derive it from cumulative word_count is what makes every
+              // segment render exactly the words chosen for it.
               ...(result.arabicText ? { arabic_text: result.arabicText } : {}),
+              ...(result.wordStart !== undefined ? { word_start: result.wordStart } : {}),
               isFirstOfAyah: result.isFirstOfAyah,
-              ...(result.repeatOfId && idToPart.has(result.repeatOfId)
-                ? { repeat_of_part: idToPart.get(result.repeatOfId) }
-                : {}),
+              ...(result.isRepeat ? { is_repeat: true } : {}),
               ...(oldMapping?.arabicTextScale !== undefined ? { arabicTextScale: oldMapping.arabicTextScale } : {}),
               ...(oldMapping?.arabicWidthScale !== undefined ? { arabicWidthScale: oldMapping.arabicWidthScale } : {}),
               ...(oldMapping?.translationTextScale !== undefined
@@ -2275,6 +2353,13 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
                 ? { translationWidthScale: oldMapping.translationWidthScale }
                 : {}),
               ...(oldMapping?.arabicOffsetY !== undefined ? { arabicOffsetY: oldMapping.arabicOffsetY } : {}),
+              // Manual Arabic line breaks index into this segment's words, so
+              // they only carry over while those words are unchanged.
+              ...(oldMapping?.arabic_line_breaks &&
+              (oldMapping.arabic_text === result.arabicText ||
+                (oldMapping.word_start === result.wordStart && oldMapping.word_count === result.wordCount))
+                ? { arabic_line_breaks: oldMapping.arabic_line_breaks }
+                : {}),
               ...(oldMapping?.translationOffsetY !== undefined
                 ? { translationOffsetY: oldMapping.translationOffsetY }
                 : {}),
@@ -2634,6 +2719,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
                 onTranslationWidthScaleChange={handleTranslationWidthScaleChange}
                 onArabicOffsetYChange={handleArabicOffsetYChange}
                 onTranslationOffsetYChange={handleTranslationOffsetYChange}
+                onArabicLineBreaksChange={handleArabicLineBreaksChange}
+                onTranslationLinesChange={handleTranslationLinesChange}
                 backgroundOpacity={backgroundOpacity}
                 onBackgroundOpacityChange={setBackgroundOpacity}
                 showSurahNameArabic={showSurahNameArabic}
@@ -2694,6 +2781,7 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
                       onLiveTranslationEdit={handleLiveTranslationEdit}
                       arabicFont={arabicFont}
                       translationFontFamily={timingEditorTranslationFontFamily}
+                      getAyahWordRange={getAyahWordRange}
                     />
                   </div>
                 );

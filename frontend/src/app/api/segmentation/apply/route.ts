@@ -104,7 +104,12 @@ export async function POST(req: Request) {
       // boundaries the user actually dragged -- text would shift to
       // different segments than the ones they timed -- which is strictly
       // worse than rendering with whatever the user explicitly set.
-      if (totalUnits !== actualWordCount && !allMappingsHaveManualTiming) {
+      // Likewise when every mapping carries its own word_start: segments
+      // then pick their word ranges independently (they may repeat or skip
+      // words, see VerseMapping.word_start), so word_counts summing to
+      // something other than the ayah's word count is expected, not an error.
+      const allMappingsHaveOwnRange = item.mappings.every((m: any) => typeof m.word_start === "number");
+      if (totalUnits !== actualWordCount && !allMappingsHaveManualTiming && !allMappingsHaveOwnRange) {
         console.warn(`[Segmentation Apply] Auto-correcting word count mismatch for Surah ${item.surah} Ayah ${item.ayah}. Expected ${actualWordCount}, got ${totalUnits}`);
         // Proportionately adjust the mappings. Reserve at least 1 word for
         // every remaining mapping (including the current one) so earlier
