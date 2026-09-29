@@ -710,9 +710,12 @@ export async function POST(req: Request) {
     let globalAudioPath: string | null = null;
     let globalAudioDurationInFrames = 0;
 
-    // preparedAudioLocalPath lives under public/renders/temp_audio -- the
-    // EPHEMERAL tmpfs (see RENDERS_DIR's own comment / docker-compose.yml),
-    // wiped on every container restart. render/route.ts itself only ever
+    // preparedAudioLocalPath now lives in the persistent PREPARED_AUDIO_REL_DIR
+    // (see src/lib/preparedAudio.ts), but drafts saved before that still
+    // point under public/renders/temp_audio -- the EPHEMERAL tmpfs (see
+    // RENDERS_DIR's own comment / docker-compose.yml), wiped on every
+    // container restart -- and the manual cleanup route can remove either.
+    // render/route.ts itself only ever
     // WRITES into it, but VideoCreatorForm's autosaveDraft persists this
     // exact absolute path into the (long-lived) draft JSON and keeps
     // re-sending it unchanged on every later render/preview once that draft
@@ -961,7 +964,14 @@ export async function POST(req: Request) {
 
             // Download MP3
             const localMp3Path = await downloadAudioToPublic(mp3Url, mp3RelPath);
-            tempFilesToCleanup.push(localMp3Path);
+            // When this is the fallback for a vanished prepared clip (see
+            // preparedAudioFileExists), the fresh extraction lands on the
+            // SAME filename -- it has just restored the file the timing
+            // editor loads its waveform from, so it must not be deleted
+            // after the render (that left the editor stuck loading a 404).
+            if (!preparedAudioLocalPath || path.resolve(localMp3Path) !== path.resolve(preparedAudioLocalPath)) {
+              tempFilesToCleanup.push(localMp3Path);
+            }
 
             // Download JSON
             const jsonUrl = `${baseUrl}/api/extraction/download/${extractionData.json_filename}`;

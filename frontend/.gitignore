@@ -43,6 +43,8 @@ next-env.d.ts
 # user-generated video-creator drafts (see /api/drafts)
 /src/data/drafts/
 /public/render-assets/drafts/
+# prepared (aligned) audio clips and saved timing-editor cuts (see src/lib/preparedAudio.ts)
+/public/render-assets/prepared-audio/
 
 # user-generated gallery entries (see /api/video/gallery, src/lib/videoGallery.ts)
 # -- per-user saved videos, same reasoning as drafts above

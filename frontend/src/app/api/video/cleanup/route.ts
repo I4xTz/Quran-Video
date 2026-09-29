@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
+import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,7 @@ export async function DELETE() {
     // 1. Clear frontend generated files
     const pathsToClear = [
       path.join(process.cwd(), "public", "renders", "temp_audio"),
+      path.join(process.cwd(), "public", PREPARED_AUDIO_REL_DIR),
       path.join(process.cwd(), "public", "renders", "output"),
       path.join(process.cwd(), "public", "render-assets", "generated-bg"),
       // Saved drafts have no automatic expiry (see /api/drafts) -- this is

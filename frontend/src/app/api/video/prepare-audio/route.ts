@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import axios from "axios";
+import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,7 +95,7 @@ export async function POST(req: Request) {
         if (extractionData.success) {
           if (extractionData.mp3_filename) {
             const mp3Url = `${baseUrl}/api/extraction/download/${extractionData.mp3_filename}`;
-            const mp3RelPath = `renders/temp_audio/${extractionData.mp3_filename}`;
+            const mp3RelPath = `${PREPARED_AUDIO_REL_DIR}/${extractionData.mp3_filename}`;
             localMp3Path = await downloadAudioToPublic(mp3Url, mp3RelPath);
             globalAudioPath = `/api/serve-audio?file=${mp3RelPath}&t=${Date.now()}`;
           }
@@ -126,7 +127,7 @@ export async function POST(req: Request) {
         const extractionData = extractRes.data;
         if (extractionData.success) {
           const mp3Url = `${baseUrl}/api/extraction/download/${extractionData.mp3_filename}`;
-          const mp3RelPath = `renders/temp_audio/${extractionData.mp3_filename}`;
+          const mp3RelPath = `${PREPARED_AUDIO_REL_DIR}/${extractionData.mp3_filename}`;
           localMp3Path = await downloadAudioToPublic(mp3Url, mp3RelPath);
           globalAudioPath = `/api/serve-audio?file=${mp3RelPath}&t=${Date.now()}`;
 
