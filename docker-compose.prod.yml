@@ -1,0 +1,66 @@
+# Production overrides. Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# (add -f docker-compose.gpu.yml as well on an NVIDIA GPU server)
+#
+# Requires a .env file next to this one -- see .env.example. Only port 3000
+# is published; put a reverse proxy with HTTPS (Caddy/nginx) in front of it.
+
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Never reachable from outside the Docker network.
+    ports: !reset []
+
+  migrate:
+    build:
+      context: ./frontend
+      target: production
+    environment:
+      - DATABASE_URL=postgresql://user:${POSTGRES_PASSWORD}@db:5432/kurannuru?schema=app
+
+  backend:
+    # Only the frontend talks to the backend, over the internal network.
+    ports: !reset []
+    environment:
+      - DATABASE_URL=postgresql://user:${POSTGRES_PASSWORD}@db:5432/kurannuru
+      - CORS_ORIGINS=
+      - DISABLE_DOCS=1
+      - QURAN_JSON_PATH=/seed/quran.json
+    # Code is baked into the image; only the data folder (Whisper model,
+    # surah audio cache, extraction scratch) persists.
+    volumes: !override
+      - backend_data:/app/data
+      - ./frontend/src/data/quran.json:/seed/quran.json:ro
+    # Seeds the surah/ayah tables on first start (no-op once seeded).
+    command: sh -c "rm -rf /app/data/extracted_clips/* /app/data/temp_extraction/* /app/app/static/tmp/*/ 2>/dev/null; python seed_quran.py || echo 'WARNING - seeding failed'; exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    environment:
+      - DATABASE_URL=postgresql://user:${POSTGRES_PASSWORD}@db:5432/kurannuru?schema=app
+      - AUTH_SECRET=${AUTH_SECRET:?set AUTH_SECRET in .env (openssl rand -hex 32)}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+      - WATCHPACK_POLLING=false
+    # No source bind mount -- the built image is what runs. Everything
+    # users create lives on named volumes so it survives redeploys.
+    volumes: !override
+      - render_assets:/app/public/render-assets
+      - avatars:/app/public/avatars
+      - drafts:/app/src/data/drafts
+      - gallery:/app/src/data/gallery
+      - type: tmpfs
+        target: /app/public/renders
+        tmpfs:
+          size: 2G
+    command: sh -c "rm -rf public/render-assets/trimmed-audio/* public/render-assets/generated-bg/* 2>/dev/null; exec npm start"
+    restart: unless-stopped
+
+volumes:
+  backend_data:
+  avatars:
+  drafts:
+  gallery:

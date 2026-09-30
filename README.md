@@ -71,6 +71,21 @@ Once the containers are successfully running, you can access the services at:
 - **Postgres Database**: `localhost:5433` (User: `user`, Password: `password`, DB: `kurannuru`)
 - **Redis**: `localhost:6380`
 
+## 🌐 Production Deployment
+
+The default `docker-compose.yml` is for local development only (dev server, open ports, default passwords). On a server:
+
+1. Copy `.env.example` to `.env` and fill in `POSTGRES_PASSWORD`, `AUTH_SECRET` (`openssl rand -hex 32`) and your own email in `ADMIN_EMAILS`.
+2. Start with the production override (add `-f docker-compose.gpu.yml` on a GPU server):
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+   ```
+3. Put a reverse proxy with HTTPS (Caddy or nginx) in front of port `3000`. It is the only published port; Postgres and the backend stay on the internal Docker network.
+
+Uploaded files, drafts, gallery videos, avatars and the backend's audio cache are kept on named Docker volumes, so they survive rebuilds.
+
+> ⚠️ Password-reset and email-verification links are still returned directly in the API response (`DEV_MODE_NO_EMAIL` in `frontend/src/lib/auth/tokens.ts`) until real email delivery is wired up. While it is on, anyone who knows a user's email can reset that user's password.
+
 ## 🛑 Stopping the Application
 To stop the running containers, press `Ctrl+C` in your terminal, and then run:
 ```bash

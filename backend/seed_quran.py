@@ -58,7 +58,9 @@ def seed_db():
     tr_res = json.loads(urllib.request.urlopen(req).read().decode('utf-8'))["data"]["surahs"]
     
     print("Loading local Quran data (PUA text + page numbers)...")
-    quran_file = os.path.join(os.path.dirname(__file__), "data", "quran.json")
+    # data/ is gitignored, so a fresh deployment points QURAN_JSON_PATH at
+    # the frontend's identical copy (frontend/src/data/quran.json) instead.
+    quran_file = os.getenv("QURAN_JSON_PATH") or os.path.join(os.path.dirname(__file__), "data", "quran.json")
     with open(quran_file, "r", encoding="utf-8") as f:
         quran_data = json.load(f)
 

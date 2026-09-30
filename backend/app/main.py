@@ -8,7 +8,14 @@ from app.database import engine, Base
 # Create tables
 Base.metadata.create_all(bind=engine)
 
+# Interactive API docs are handy locally but just advertise every endpoint
+# in production -- set DISABLE_DOCS=1 there.
+_docs_disabled = os.getenv("DISABLE_DOCS", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(
+    docs_url=None if _docs_disabled else "/docs",
+    redoc_url=None if _docs_disabled else "/redoc",
+    openapi_url=None if _docs_disabled else "/openapi.json",
     title="Kuran Nuru API",
     description="Kur'an-ı Kerim veritabanı — Uthmânî metin, Türkçe çeviri, ses dosyaları.",
     version="1.0.0",
@@ -17,7 +24,9 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # In production, restrict to your actual domain(s) via env var
 _raw_origins = os.getenv("CORS_ORIGINS", "*")
-allow_origins = [o.strip() for o in _raw_origins.split(",")]
+# Empty means "no cross-origin access at all" -- the browser only ever
+# reaches this API through the Next.js /backend proxy (same origin).
+allow_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,

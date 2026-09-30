@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import fs from "fs/promises";
 import path from "path";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "generate-background", 10, 10 * 60 * 1000);
+  if (limited) return limited;
+
   try {
     const { prompt } = await req.json();
-    if (!prompt) {
+    if (!prompt || typeof prompt !== "string" || prompt.length > 1000) {
       return NextResponse.json({ error: "Prompt is required." }, { status: 400 });
     }
 
@@ -88,7 +92,9 @@ export async function POST(req: Request) {
     const absolutePath = path.join(uploadsDir, filename);
     await fs.writeFile(absolutePath, buffer);
 
-    const imageUrl = `/render-assets/generated-bg/${filename}`;
+    // Through /api/serve-audio like every other runtime-written asset:
+    // `next start` only serves public/ files that existed at build time.
+    const imageUrl = `/api/serve-audio?file=render-assets/generated-bg/${filename}`;
     
     console.log(`[AI Background] Generated image successfully: ${imageUrl}`);
 

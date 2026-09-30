@@ -441,36 +441,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   };
 
 
-  // Applies whatever segmentation is currently pending (from the timing
-  // editor) to the server-side temp_segmentation.json BEFORE either a real
-  // render or a preview request -- both need render/route.ts to read the
-  // SAME, latest segmentation, or a preview could silently show stale
-  // timing from before the user's last edit in Step 4, defeating the whole
-  // point of previewing before committing to a render.
-  const applyPendingSegmentation = async (segmentationData: any[] | null) => {
-    if (!segmentationData || segmentationData.length === 0) return;
-    setSegmentationProgress(
-      isArabic ? "جاري تطبيق التقسيم..." : "Bölümleme uygulanıyor..."
-    );
-    try {
-      const applyRes = await fetch("/api/segmentation/apply", {
-        method: "POST",
-        body: JSON.stringify(segmentationData),
-        headers: { "Content-Type": "application/json" },
-      });
-
-      if (!applyRes.ok) {
-        const applyData = await applyRes.json();
-        console.warn(`[UI] Failed to apply segmentation: ${applyData.error}. Continuing without segmentation.`);
-        await fetch("/api/segmentation/clear", { method: "POST" }).catch(() => { });
-      } else {
-        console.log(`[UI] Successfully applied segmentation for ${segmentationData.length} verses`);
-      }
-    } finally {
-      setSegmentationProgress(null);
-    }
-  };
-
   // Shared by both the real render (executeVideoRender) and the live
   // preview (handleLoadPreview) -- identical payload either way except for
   // the "mode" flag, so render/route.ts always builds inputProps off the
@@ -552,6 +522,13 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
       }
     }
 
+    // Sent with every request (preview and real render alike) so the server
+    // always renders this exact, latest segmentation -- render/route.ts
+    // validates it and simply renders unsegmented if it's invalid.
+    if (pendingSegmentationData.length > 0) {
+      formData.append("segmentation", JSON.stringify(pendingSegmentationData));
+    }
+
     if (mode === "preview") formData.append("mode", "preview");
 
     return formData;
@@ -561,7 +538,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     setIsLoadingPreview(true);
     setPreviewError("");
     try {
-      await applyPendingSegmentation(pendingSegmentationData.length > 0 ? pendingSegmentationData : null);
       const formData = buildRenderFormData("preview");
       const response = await fetch("/api/video/render", {
         method: "POST",
@@ -779,9 +755,9 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   // edit whichever segment is on screen instead of one video-wide value).
   // Patches previewProps (so the live <Player> reflects it immediately,
   // same spirit as the effect just above) AND pendingSegmentationData --
-  // the latter is the durable source of truth actually sent to
-  // /api/segmentation/apply by both autosaveDraft and
-  // executeVideoRender/handleLoadPreview (see applyPendingSegmentation), so
+  // the latter is the durable source of truth actually sent with both
+  // autosaveDraft and every render/preview request (see
+  // buildRenderFormData), so
   // without also patching it here a per-segment resize would only ever
   // last until the next preview/render reload silently rebuilt verses from
   // the untouched original mappings. Falls back to the old video-wide
@@ -827,8 +803,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     // the SAME single-mapping shape ephemerally for display, but that
     // in-memory copy alone wouldn't survive the next debounced preview
     // reload -- this materializes it into both previewProps (live, right
-    // now) and pendingSegmentationData (durable, read by
-    // applyPendingSegmentation into the actual export) the first time such
+    // now) and pendingSegmentationData (durable, sent by
+    // buildRenderFormData into the actual export) the first time such
     // a verse is ever resized.
     setPreviewProps((prev) => {
       if (!prev) return prev;
@@ -1008,10 +984,8 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     return run;
   };
 
-  const executeVideoRender = async (segmentationData: any[] | null = null) => {
+  const executeVideoRender = async () => {
     try {
-      await applyPendingSegmentation(segmentationData);
-
       // Force a fresh save right before rendering (rather than trusting the
       // debounced autosave effect to have already run) so the draft this
       // gallery entry links to (see buildRenderFormData's draftIdOverride)
@@ -1200,12 +1174,7 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
   // Reset prepared audio if user changes audio-related selection (NOT background).
   // Also clears any existing segmentation/timing data: its start_ms/end_ms are
   // indexed against the OLD prepared audio's timeline, so it silently
-  // desyncs once the verse range/reciter/custom-audio changes. The
-  // server-side /api/segmentation/clear call matters too, not just the
-  // in-memory reset -- render/route.ts reads temp_segmentation.json from
-  // disk independently of this component's state, so a stale file left over
-  // from a prior segmentation would otherwise get applied to a new verse
-  // range if the user regenerates without re-opening the timing step.
+  // desyncs once the verse range/reciter/custom-audio changes.
   useEffect(() => {
     if (isHydratingRef.current) return;
     audioParamsEpochRef.current += 1;
@@ -1221,7 +1190,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     setPendingSegmentationData([]);
     setPuaTokenCountsByAyah({});
     setLowConfidenceAyahs(new Set());
-    fetch("/api/segmentation/clear", { method: "POST" }).catch(() => {});
   }, [selectedSurah, startVerse, endVerse, selectedReciter, customAudio, audioSourceMode]);
 
   // Audio preparation is intentionally NOT automatic: it only runs when the
@@ -1488,16 +1456,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
         if (data.segmentation) {
           setPendingSegmentationData(data.segmentation.pendingSegmentationData ?? []);
           setLowConfidenceAyahs(new Set(data.segmentation.lowConfidenceAyahs ?? []));
-          // Re-sync the server-side temp_segmentation.json (render/route.ts
-          // reads it independently of this component's in-memory state) so
-          // a resumed draft renders with its segmentation intact.
-          if (data.segmentation.pendingSegmentationData?.length > 0) {
-            await fetch("/api/segmentation/apply", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(data.segmentation.pendingSegmentationData),
-            }).catch(() => {});
-          }
         }
 
         if (data.wizardStep) setCurrentStep(data.wizardStep);
@@ -1543,7 +1501,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     if (idToDelete) {
       fetch(`/api/drafts/${idToDelete}`, { method: "DELETE" }).catch(() => {});
     }
-    await fetch("/api/segmentation/clear", { method: "POST" }).catch(() => {});
 
     isHydratingRef.current = true;
     setSelectedSurah(null);
@@ -1884,7 +1841,6 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
     setPendingSegmentationData([]);
     setPuaTokenCountsByAyah({});
     setLowConfidenceAyahs(new Set());
-    await fetch("/api/segmentation/clear", { method: "POST" }).catch(() => { });
   };
 
   // The timing editor now doubles as the audio trimmer (its first/last
@@ -2412,9 +2368,7 @@ export default function VideoCreatorForm({ isLoggedIn }: { isLoggedIn: boolean }
       // renderState is already "rendering" from the moment of the click
       // above regardless of how long that wait turns out to be, so the
       // button's own spinner/disabled state is accurate either way.
-      await runSerializedRender(() =>
-        executeVideoRender(pendingSegmentationData.length > 0 ? pendingSegmentationData : null)
-      );
+      await runSerializedRender(() => executeVideoRender());
     } catch (error) {
       setRenderError(error instanceof Error ? error.message : "تعذر إنشاء الفيديو");
       setRenderState("error");

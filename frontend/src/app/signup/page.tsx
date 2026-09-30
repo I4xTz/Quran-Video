@@ -25,6 +25,9 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   const errorMessage = (code: string) => {
+    if (code === "too_many_requests") {
+      return isAr ? "محاولات كثيرة، انتظر قليلاً ثم حاول مجدداً" : "Çok fazla deneme, lütfen biraz bekleyip tekrar deneyin";
+    }
     if (code === "invalid_email") {
       return isAr ? "البريد الإلكتروني غير صالح" : "Geçersiz e-posta adresi";
     }

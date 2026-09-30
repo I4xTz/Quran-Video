@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { signSessionToken, sessionCookieOptions, SESSION_COOKIE } from "@/lib/auth/session";
@@ -8,6 +9,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "signup", 5, 60 * 60 * 1000);
+  if (limited) return limited;
+
   const body = await req.json().catch(() => null);
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body?.password === "string" ? body.password : "";

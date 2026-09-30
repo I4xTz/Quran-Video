@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
+import { getSession } from "@/lib/auth/session";
+import { isAdminEmail } from "@/lib/auth/admin";
 
 export const runtime = "nodejs";
 
@@ -26,6 +28,15 @@ async function clearDirectory(dirPath: string) {
 }
 
 export async function DELETE() {
+  // Wipes EVERY user's temp files and drafts -- admins only.
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
+  }
+  if (!isAdminEmail(session.email)) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
   try {
     // 1. Clear frontend generated files
     const pathsToClear = [

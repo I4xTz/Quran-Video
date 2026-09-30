@@ -9,6 +9,12 @@ function getSecretKey() {
   if (!secret) {
     throw new Error("AUTH_SECRET environment variable is not set");
   }
+  // Anyone who knows the secret can forge a session for any user, so the
+  // docker-compose dev placeholder (or anything short) must never reach
+  // production. Generate one with: openssl rand -hex 32
+  if (process.env.NODE_ENV === "production" && (secret.startsWith("dev-only") || secret.length < 32)) {
+    throw new Error("AUTH_SECRET is insecure -- set a random value of at least 32 characters");
+  }
   return new TextEncoder().encode(secret);
 }
 

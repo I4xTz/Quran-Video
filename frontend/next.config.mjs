@@ -14,9 +14,16 @@ const nextConfig = {
   },
   async rewrites() {
     return [
+      // Only the read-only surah endpoints the browser actually calls
+      // (VideoCreatorForm) -- extraction/cleanup/AI stay reachable only
+      // server-side via INTERNAL_API_URL, never from the public internet.
       {
-        source: '/backend/:path*',
-        destination: 'http://backend:8000/api/:path*',
+        source: '/backend/surahs',
+        destination: 'http://backend:8000/api/surahs',
+      },
+      {
+        source: '/backend/surahs/:path*',
+        destination: 'http://backend:8000/api/surahs/:path*',
       },
     ];
   },

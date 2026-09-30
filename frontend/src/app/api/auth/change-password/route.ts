@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth/session";
@@ -9,6 +10,9 @@ const MIN_PASSWORD_LENGTH = 8;
 // /api/auth/reset-password (which proves identity via an emailed token
 // instead, for someone who can't log in at all).
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "change-password", 10, 15 * 60 * 1000);
+  if (limited) return limited;
+
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "not_authenticated" }, { status: 401 });

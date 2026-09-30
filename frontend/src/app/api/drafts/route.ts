@@ -15,6 +15,24 @@ const VALID_IMAGE_HEADERS = [
   [0x52, 0x49, 0x46, 0x46], // WEBP
 ];
 
+// Draft ids are always our own crypto.randomUUID() output (same check as
+// drafts/[id]) -- anything else could path-traverse out of DRAFTS_DIR.
+const DRAFT_ID_RE = /^[a-f0-9-]{36}$/i;
+
+const ALLOWED_EXTENSIONS: Record<"bg" | "bgVideo" | "audio" | "font", string[]> = {
+  bg: [".jpg", ".jpeg", ".png", ".gif", ".webp"],
+  bgVideo: [".mp4", ".webm", ".mov", ".m4v"],
+  audio: [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".webm"],
+  font: [".ttf", ".otf", ".woff", ".woff2"],
+};
+
+const MAX_BYTES: Record<"bg" | "bgVideo" | "audio" | "font", number> = {
+  bg: 20 * 1024 * 1024,
+  bgVideo: 200 * 1024 * 1024,
+  audio: 100 * 1024 * 1024,
+  font: 10 * 1024 * 1024,
+};
+
 function isValidImage(buffer: Buffer) {
   return VALID_IMAGE_HEADERS.some((header) => header.every((byte, i) => buffer[i] === byte));
 }
@@ -23,7 +41,11 @@ async function saveDraftFile(draftId: string, kind: "bg" | "bgVideo" | "audio" |
   const dir = path.join(DRAFT_ASSETS_DIR, draftId);
   await fs.mkdir(dir, { recursive: true });
   const defaultExtension = kind === "bg" ? ".jpg" : kind === "bgVideo" ? ".mp4" : kind === "font" ? ".ttf" : ".mp3";
-  const extension = path.extname(file.name).toLowerCase() || defaultExtension;
+  const rawExtension = path.extname(file.name).toLowerCase();
+  const extension = ALLOWED_EXTENSIONS[kind].includes(rawExtension) ? rawExtension : defaultExtension;
+  if (file.size > MAX_BYTES[kind]) {
+    throw new Error(`Uploaded ${kind} file is too large`);
+  }
   const filename = `${kind}${extension}`;
   const absolutePath = path.join(dir, filename);
   const buffer = Buffer.from(await file.arrayBuffer());
@@ -45,6 +67,9 @@ export async function POST(req: Request) {
     const formData = await req.formData();
 
     const draftId = (formData.get("draftId") as string) || crypto.randomUUID();
+    if (!DRAFT_ID_RE.test(draftId)) {
+      return NextResponse.json({ error: "Invalid draft id" }, { status: 400 });
+    }
 
     const draft: Record<string, unknown> = {
       id: draftId,

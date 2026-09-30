@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import { prisma } from "@/lib/prisma";
 import { generateRawToken, hashToken, RESET_TOKEN_TTL_MS, DEV_MODE_NO_EMAIL } from "@/lib/auth/tokens";
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "forgot-password", 5, 15 * 60 * 1000);
+  if (limited) return limited;
+
   const body = await req.json().catch(() => null);
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
 

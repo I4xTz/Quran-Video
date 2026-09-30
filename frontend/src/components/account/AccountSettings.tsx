@@ -26,6 +26,8 @@ type Props = {
   initialName: string | null;
   initialAvatarUrl: string | null;
   initialEmailVerified: boolean;
+  // Only admins (ADMIN_EMAILS) see the server-wide temp-file cleanup.
+  isAdmin: boolean;
 };
 
 // Other mounted instances of AccountMenu (in Navbar) fetched /api/auth/me
@@ -38,7 +40,7 @@ function broadcastProfileUpdated() {
   window.dispatchEvent(new Event("account:profile-updated"));
 }
 
-export default function AccountSettings({ email, initialName, initialAvatarUrl, initialEmailVerified }: Props) {
+export default function AccountSettings({ email, initialName, initialAvatarUrl, initialEmailVerified, isAdmin }: Props) {
   const { language } = useLanguage();
   const isAr = language === "ar";
   const t = (ar: string, tr: string) => (isAr ? ar : tr);
@@ -453,7 +455,8 @@ export default function AccountSettings({ email, initialName, initialAvatarUrl, 
             </button>
           </div>
 
-          {/* Clear temporary files */}
+          {/* Clear temporary files (server-wide, admins only) */}
+          {isAdmin && (
           <div className="mt-6 rounded-xl border border-border bg-background/50 p-5">
             <h2 className="text-sm font-bold text-foreground mb-2">
               {t("الملفات المؤقتة", "Geçici Dosyalar")}
@@ -505,6 +508,7 @@ export default function AccountSettings({ email, initialName, initialAvatarUrl, 
               )}
             </div>
           </div>
+          )}
 
           <div className="mt-6 rounded-xl border border-accent-red/30 bg-accent-red-bg/40 p-5">
             <h2 className="text-sm font-bold text-accent-red mb-2">

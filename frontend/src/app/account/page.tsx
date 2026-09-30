@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { avatarUrl } from "@/lib/auth/avatar";
+import { isAdminEmail } from "@/lib/auth/admin";
 import Navbar from "@/components/layout/Navbar";
 import AccountSettings from "@/components/account/AccountSettings";
 
@@ -27,6 +28,7 @@ export default async function AccountPage() {
           initialName={user.name}
           initialAvatarUrl={avatarUrl(user.avatarPath)}
           initialEmailVerified={Boolean(user.emailVerifiedAt)}
+          isAdmin={isAdminEmail(user.email)}
         />
       </main>
     </div>

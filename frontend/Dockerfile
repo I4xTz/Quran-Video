@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim AS base
 
 WORKDIR /app
 
@@ -35,5 +35,16 @@ COPY . .
 
 EXPOSE 3000
 
-# Run development server to enable hot-reload
+# Production image (docker-compose.prod.yml builds this target): a real
+# optimized build served by `next start`. src/ stays in the image on
+# purpose -- render/route.ts bundles src/remotion at runtime.
+FROM base AS production
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+CMD ["npm", "start"]
+
+# Development image -- last stage, so a plain `docker compose up` keeps
+# building this one. Run development server to enable hot-reload
+FROM base AS dev
 CMD ["npm", "run", "dev"]

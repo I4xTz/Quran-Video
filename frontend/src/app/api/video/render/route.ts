@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
-import { exec, execFile } from "child_process";
+import crypto from "crypto";
+import { execFile } from "child_process";
 import { promisify } from "util";
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 import quranData from "@/data/quran.json";
 import quranQcfV1Data from "@/data/quran-qcf-v1.json";
@@ -32,6 +32,8 @@ import { getSurahWordMap } from "@/lib/quranWordMap";
 import { saveToGallery } from "@/lib/videoGallery";
 import { getSession } from "@/lib/auth/session";
 import { getSurahEnglishName } from "@/lib/surahEnglishNames";
+import { normalizeSegmentation } from "@/lib/segmentation";
+import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
 
 
 
@@ -78,6 +80,26 @@ type ApiSurah = {
 
 const FPS = 30;
 const RENDERS_DIR = path.join(process.cwd(), "public", "renders");
+// Every render gets a unique output name, so finished videos no longer
+// overwrite each other -- delete ones old enough that their download link
+// has long been used (logged-in users keep a copy in the gallery anyway).
+const RENDER_OUTPUT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+async function pruneOldRenders() {
+  try {
+    const now = Date.now();
+    for (const entry of await fs.readdir(RENDERS_DIR, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".mp4")) continue;
+      const filePath = path.join(RENDERS_DIR, entry.name);
+      const stat = await fs.stat(filePath);
+      if (now - stat.mtimeMs > RENDER_OUTPUT_MAX_AGE_MS) {
+        await fs.unlink(filePath).catch(() => undefined);
+      }
+    }
+  } catch {
+    // Directory missing or unreadable -- nothing to prune.
+  }
+}
 const RECITERS = {
   mishary_alafasy: {
     name: "مشاري راشد العفاسي",
@@ -119,6 +141,27 @@ function safeUploadName(name: string, defaultExtension = ".jpg") {
   const extension = path.extname(name).toLowerCase() || defaultExtension;
   return `bg-${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`;
 }
+
+// preparedAudioLocalPath comes straight from the client (and from saved
+// drafts), so only accept files inside the directories prepare-audio ever
+// writes to -- the current persistent one and the legacy tmpfs one older
+// drafts may still point at.
+const PREPARED_AUDIO_ALLOWED_DIRS = [
+  path.join(process.cwd(), "public", PREPARED_AUDIO_REL_DIR),
+  path.join(process.cwd(), "public", "renders", "temp_audio"),
+];
+
+function isAllowedPreparedAudioPath(filePath: string) {
+  const resolved = path.resolve(filePath);
+  return PREPARED_AUDIO_ALLOWED_DIRS.some((dir) => resolved.startsWith(dir + path.sep));
+}
+
+const MAX_UPLOAD_BYTES = {
+  image: 20 * 1024 * 1024,
+  video: 200 * 1024 * 1024,
+  audio: 100 * 1024 * 1024,
+  font: 10 * 1024 * 1024,
+};
 
 async function fileExists(filePath: string) {
   try {
@@ -389,16 +432,33 @@ export async function POST(req: Request) {
   try {
     const formData = await req.formData();
 
+    // This request's own segmentation (see buildRenderFormData) -- never a
+    // server-side shared copy, so concurrent users can't leak into each
+    // other's videos. Invalid data renders unsegmented rather than failing.
     let segmentationData: any[] = [];
-    try {
-      console.log("[Video Render] Attempting to read temp_segmentation.json");
-      const tempFilePath = path.join(process.cwd(), "src", "data", "temp_segmentation.json");
-      const fileContent = await fs.readFile(tempFilePath, "utf8");
-      segmentationData = JSON.parse(fileContent);
-      console.log(`[Video Render] Temp file exists: true`);
-      console.log(`[Video Render] Temp file content: ${JSON.stringify(segmentationData, null, 2)}`);
-    } catch {
-      console.log(`[Video Render] Temp file exists: false`);
+    const segmentationStr = formData.get("segmentation");
+    if (typeof segmentationStr === "string" && segmentationStr) {
+      try {
+        const result = await normalizeSegmentation(JSON.parse(segmentationStr));
+        if ("error" in result) {
+          console.warn(`[Video Render] Ignoring invalid segmentation: ${result.error}`);
+        } else {
+          segmentationData = result.data;
+        }
+      } catch (err) {
+        console.warn("[Video Render] Ignoring unparseable segmentation:", err);
+      }
+    }
+
+    for (const [kind, file] of [
+      ["image", formData.get("bgImage")],
+      ["video", formData.get("bgVideo")],
+      ["audio", formData.get("customAudio")],
+      ["font", formData.get("customTranslationFont")],
+    ] as const) {
+      if (file instanceof File && file.size > MAX_UPLOAD_BYTES[kind]) {
+        return NextResponse.json({ error: `Uploaded ${kind} file is too large` }, { status: 413 });
+      }
     }
 
     const surahId = Number(formData.get("surahId"));
@@ -638,12 +698,11 @@ export async function POST(req: Request) {
       await fs.writeFile(absolutePath, buffer);
 
       try {
-        // execFile (argument array), NOT execAsync's shell string -- unlike
-        // every other path/filename interpolated into a shell command
-        // elsewhere in this file, `filename` here is built from the
-        // uploaded file's OWN extension (safeUploadName -> path.extname on
-        // attacker-controlled bgVideo.name), so it must never be pasted into
-        // a string a shell re-parses.
+        // execFile (argument array), never a shell string -- `filename`
+        // here is built from the uploaded file's OWN extension
+        // (safeUploadName -> path.extname on attacker-controlled
+        // bgVideo.name), so it must never be pasted into a string a shell
+        // re-parses.
         const { stdout } = await execFileAsync("ffprobe", [
           "-v", "error",
           "-show_entries", "format=duration",
@@ -729,6 +788,9 @@ export async function POST(req: Request) {
     // brand-new project would. Checked once, up front, so every branch
     // below treats a vanished prepared file exactly like it was never
     // provided at all.
+    if (preparedAudioLocalPath && !isAllowedPreparedAudioPath(preparedAudioLocalPath)) {
+      return NextResponse.json({ error: "Invalid prepared audio path" }, { status: 400 });
+    }
     const preparedAudioFileExists =
       usePreparedAudio && preparedAudioLocalPath ? await fileExists(preparedAudioLocalPath) : false;
     if (usePreparedAudio && preparedAudioLocalPath && !preparedAudioFileExists) {
@@ -843,7 +905,7 @@ export async function POST(req: Request) {
               .catch(() => false);
 
             if (!alreadyTrimmed) {
-              const toArg = trimEnd > 0 ? `-to ${trimEnd}` : "";
+              const toArgs = trimEnd > 0 ? ["-to", String(trimEnd)] : [];
               // Stream copy instead of re-encoding (libmp3lame): "-ss" lands at
               // the exact same position either way (output seeking, same as
               // before), so trim precision is unaffected -- this only skips a
@@ -852,7 +914,11 @@ export async function POST(req: Request) {
               // step) and avoids the quality loss of double-compressing audio
               // that's already MP3. Applies to the real render too, not just
               // preview -- there's no tradeoff being made here, only upside.
-              await execAsync(`ffmpeg -y -i "${preparedAudioLocalPath}" -ss ${trimStart} ${toArg} -c:a copy "${trimmedAbsolutePath}"`);
+              // execFile (argument array), never a shell string: the path
+              // originates from the client.
+              await execFileAsync("ffmpeg", [
+                "-y", "-i", preparedAudioLocalPath, "-ss", String(trimStart), ...toArgs, "-c:a", "copy", trimmedAbsolutePath,
+              ]);
             }
 
             // We must serve it relative to the public folder
@@ -1231,9 +1297,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, inputProps });
     }
 
-    const filename = `${surahId}-${startVerse}-${endVerse}.mp4`;
+    // Unique per request: a name built only from the verse range let two
+    // users rendering the same ayat overwrite (and download) each other's video.
+    const filename = `${surahId}-${startVerse}-${endVerse}-${crypto.randomUUID()}.mp4`;
     const outputLocation = path.join(RENDERS_DIR, filename);
     await fs.mkdir(RENDERS_DIR, { recursive: true });
+    await pruneOldRenders();
 
     const serveUrl = await getServeUrl();
     const { width: videoWidth, height: videoHeight } = ASPECT_RATIO_DIMENSIONS[aspectRatio];

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { hashToken } from "@/lib/auth/tokens";
@@ -6,6 +7,9 @@ import { hashToken } from "@/lib/auth/tokens";
 const MIN_PASSWORD_LENGTH = 8;
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "reset-password", 10, 15 * 60 * 1000);
+  if (limited) return limited;
+
   const body = await req.json().catch(() => null);
   const token = typeof body?.token === "string" ? body.token : "";
   const password = typeof body?.password === "string" ? body.password : "";

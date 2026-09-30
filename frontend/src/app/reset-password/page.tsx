@@ -27,6 +27,9 @@ function ResetPasswordForm() {
   const [done, setDone] = useState(false);
 
   const errorMessage = (code: string) => {
+    if (code === "too_many_requests") {
+      return t("محاولات كثيرة، انتظر قليلاً ثم حاول مجدداً", "Çok fazla deneme, lütfen biraz bekleyip tekrar deneyin");
+    }
     if (code === "invalid_or_expired_token") {
       return t("الرابط غير صالح أو منتهي الصلاحية، اطلب رابطاً جديداً", "Link geçersiz veya süresi dolmuş, yeni bir link isteyin");
     }

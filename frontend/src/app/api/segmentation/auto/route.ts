@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import { getAyahRealWords, getAyahRealWordGlosses } from "@/lib/quranWordMap";
 import { getCachedSegmentation, setCachedSegmentation } from "@/lib/segmentationCache";
 
@@ -304,6 +305,9 @@ function distributeByGlossWeight(
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "segmentation-auto", 20, 10 * 60 * 1000);
+  if (limited) return limited;
+
   try {
     const body = await req.json();
     const { surah, ayah, translation, arabicWordCount } = body;

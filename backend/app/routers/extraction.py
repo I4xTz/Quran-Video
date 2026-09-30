@@ -6,6 +6,7 @@ import sys
 import threading
 from pathlib import Path
 import shutil
+import uuid
 
 scripts_path = str(Path("/app/scripts"))
 if scripts_path not in sys.path:
@@ -105,14 +106,23 @@ def generate_custom_clip(
         temp_dir = Path("/app/data/temp_extraction")
         temp_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save the uploaded file temporarily
-        temp_file_path = temp_dir / audio_file.filename
+        # Save the uploaded file temporarily under a server-chosen name -- the
+        # client's filename could contain "../" and escape temp_dir.
+        suffix = Path(audio_file.filename or "").suffix.lower()
+        if not suffix.isascii() or not suffix[1:].isalnum() or len(suffix) > 6:
+            suffix = ".mp3"
+        temp_file_path = temp_dir / f"upload_{uuid.uuid4().hex}{suffix}"
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(audio_file.file, buffer)
             
         # Never deduplicated (each upload is different audio), only serialized.
         result = _run_exclusive(
-            None, lambda: extract_custom_clip(str(temp_file_path), surah, start, end, pad_seconds=pad_seconds)
+            None, lambda: extract_custom_clip(
+                str(temp_file_path), surah, start, end, pad_seconds=pad_seconds,
+                # Unique per upload: a shared "custom" prefix let two users'
+                # uploads for the same ayat overwrite each other's output.
+                output_prefix=f"custom_{uuid.uuid4().hex}",
+            )
         )
             
         if not result:

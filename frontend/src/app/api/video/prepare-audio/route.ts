@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rateLimit";
 import fs from "fs/promises";
 import path from "path";
 import axios from "axios";
@@ -49,6 +50,9 @@ async function downloadAudioToPublic(audioUrl: string, audioPath: string) {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "prepare-audio", 20, 10 * 60 * 1000);
+  if (limited) return limited;
+
   try {
     const formData = await req.formData();
     const surahId = Number(formData.get("surahId"));
@@ -103,6 +107,11 @@ export async function POST(req: Request) {
           const jsonRes = await axios.get(jsonUrl, { timeout: 30000, validateStatus: () => true });
           if (jsonRes.status === 200) {
             wordTimingsData = jsonRes.data;
+          }
+          // Custom uploads get a unique name per request and are never
+          // reused, so drop the backend's copies once they're downloaded.
+          for (const name of [extractionData.mp3_filename, extractionData.json_filename]) {
+            if (name) await axios.delete(`${baseUrl}/api/extraction/${name}`, { validateStatus: () => true }).catch(() => undefined);
           }
         }
       } else {
