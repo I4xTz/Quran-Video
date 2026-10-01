@@ -12,6 +12,7 @@ import ahmetVarolData from "@/data/translations/ahmet_varol.json";
 import sahihInternationalData from "@/data/translations/sahih_international.json";
 import { fixMojibake } from "@/lib/textEncoding";
 import { RECITER_DISPLAY_NAMES } from "@/lib/reciterNames";
+import { RECITERS as RECITER_LIST, getReciter } from "@/lib/reciters";
 import { parseFile } from "music-metadata";
 import {
   ARABIC_FONT_OPTIONS,
@@ -100,36 +101,14 @@ async function pruneOldRenders() {
     // Directory missing or unreadable -- nothing to prune.
   }
 }
-const RECITERS = {
-  mishary_alafasy: {
-    name: "مشاري راشد العفاسي",
-    audioBaseUrl: "https://everyayah.com/data/Alafasy_128kbps",
-  },
-  maher_muaiqly: {
-    name: "ماهر المعيقلي",
-    audioBaseUrl: "https://everyayah.com/data/Maher_AlMuaiqly_64kbps",
-  },
-  ahmed_ajmi: {
-    name: "أحمد العجمي",
-    audioBaseUrl: "https://everyayah.com/data/Ahmed_ibn_Ali_al-Ajamy_128kbps_ketaballah.net",
-  },
-  yasser_dosari: {
-    name: "ياسر الدوسري",
-    audioBaseUrl: "https://everyayah.com/data/Yasser_Ad-Dussary_128kbps",
-  },
-  abdullah_mousa: {
-    name: "عبدالله الموسى",
-    audioBaseUrl: "https://everyayah.com/data/Alafasy_128kbps", // fallback dummy, uses python extraction natively
-  },
-  raad_alkurdi: {
-    name: "رعد محمد الكردي",
-    audioBaseUrl: "https://everyayah.com/data/Alafasy_128kbps", // fallback dummy, uses python extraction natively
-  },
-} as const;
+// id -> Arabic name + EveryAyah per-ayah fallback, from the shared list.
+const RECITERS: Record<string, { name: string; audioBaseUrl: string }> = Object.fromEntries(
+  RECITER_LIST.map((r) => [r.id, { name: r.arabicName, audioBaseUrl: `https://everyayah.com/data/${r.everyAyahFolder}` }])
+);
 
 const formatNumber = (num: number) => num.toString().padStart(3, "0");
 
-function audioUrlFor(reciterId: keyof typeof RECITERS, surahId: number, verseId: number) {
+function audioUrlFor(reciterId: string, surahId: number, verseId: number) {
   return `${RECITERS[reciterId].audioBaseUrl}/${formatNumber(surahId)}${formatNumber(verseId)}.mp3`;
 }
 
@@ -474,7 +453,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid video options" }, { status: 400 });
     }
 
-    const reciterId = (formData.get("reciterId") || "mishary_alafasy") as keyof typeof RECITERS;
+    const reciterId = (formData.get("reciterId") as string) || "mishary_alafasy";
     const translationId = formData.get("translationId") as string || "diyanet_yeni";
     const textScale = Math.max(0.5, Math.min(3, Number(formData.get("textScale")) || 1));
     // Arabic verse and translation each have their own independent
@@ -853,15 +832,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const RECITER_KEYS: Record<string, string> = {
-      mishary_alafasy: "mishary",
-      maher_muaiqly: "maher",
-      ahmed_ajmi: "ajmi",
-      yasser_dosari: "yasser",
-      abdullah_mousa: "mousa",
-      raad_alkurdi: "raad_alkurdi"
-    };
-    const shortReciterKey = RECITER_KEYS[reciterId as string] || "mishary";
+    const shortReciterKey = getReciter(reciterId).backendKey;
 
     let wordTimingsData: any = null;
     let extractionData: any = null;

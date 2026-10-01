@@ -1121,7 +1121,19 @@ export function QuranVideo({
                   // disappears the instant the last letter is pronounced
                   // instead of lingering through the silence until the next
                   // segment begins.
-                  const endMs = verse.wordTimings[endWordIdx].end;
+                  let endMs = verse.wordTimings[endWordIdx].end;
+                  // A word's timing spans every time the reciter said it
+                  // (a repeat after a pause), so a split inside a repeated
+                  // passage could overlap the next segment -- never let
+                  // this one run past the next segment's first word.
+                  const nextMapping = mappings[idx + 1];
+                  if (nextMapping && !nextMapping.is_skipped) {
+                    const nextStartIdx = nextMapping.word_start ?? previousWords + mapping.word_count;
+                    const nextStartMs = verse.wordTimings[nextStartIdx]?.start;
+                    if (nextStartIdx > startWordIdx && typeof nextStartMs === "number" && nextStartMs > startMs) {
+                      endMs = Math.min(endMs, nextStartMs);
+                    }
+                  }
 
                   chunkStartFrame = Math.round((startMs / 1000) * 30); // FPS is 30
                   chunkDuration = Math.max(1, Math.round(((endMs - startMs) / 1000) * 30));

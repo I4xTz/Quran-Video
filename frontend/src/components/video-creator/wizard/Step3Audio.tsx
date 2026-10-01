@@ -2,6 +2,7 @@
 
 import DropdownSelect from "@/components/ui/DropdownSelect";
 import Spinner from "@/components/ui/Spinner";
+import { RECITERS } from "@/lib/reciters";
 import { MusicalNoteIcon, VideoCameraIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
 interface Step3Props {
@@ -74,14 +75,7 @@ export default function Step3Audio({
         {audioSourceMode === "reciter" ? (
           <DropdownSelect
             placeholder={isArabic ? "مشاري راشد العفاسي" : "Mishary Rashed Alafasy"}
-            options={[
-              { value: "mishary_alafasy", label: isArabic ? "مشاري راشد العفاسي" : "Mishary Rashed Alafasy" },
-              { value: "maher_muaiqly", label: isArabic ? "ماهر المعيقلي" : "Maher Al-Muaiqly" },
-              { value: "ahmed_ajmi", label: isArabic ? "أحمد العجمي" : "Ahmed Al-Ajmi" },
-              { value: "yasser_dosari", label: isArabic ? "ياسر الدوسري" : "Yasser Al-Dosari" },
-              { value: "abdullah_mousa", label: isArabic ? "عبدالله الموسى" : "Abdullah Al-Mousa" },
-              { value: "raad_alkurdi", label: isArabic ? "رعد محمد الكردي" : "Raad Mohammad Al Kurdi" },
-            ]}
+            options={RECITERS.map((r) => ({ value: r.id, label: isArabic ? r.arabicName : r.turkishLabel }))}
             value={selectedReciter}
             onChange={(val) => onReciterChange(val as string)}
             isRtl={isArabic}

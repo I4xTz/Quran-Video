@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 import re
 import threading
+import unicodedata
 import uuid
 
 # Configure Logging
@@ -126,6 +127,35 @@ RECITERS_TIMING_ID = {
     "raad_alkurdi": 221
 }
 
+# Quran.com (QDC) recitations with human-reviewed, word-level timestamps
+# ("segments") for their own surah recordings. For these reciters nothing is
+# transcribed or aligned at all: the clip is cut from that exact recording
+# and word timings come straight from the segments, see _extract_from_qdc().
+# Keys are reciter ids as sent by the frontend (src/lib/reciters.ts), values
+# are QDC recitation ids.
+RECITERS_QDC = {
+    "mishary": 7,
+    "yasser": 97,
+    "abdulbaset": 2,
+    "abdulbaset_mujawwad": 1,
+    "sudais": 3,
+    "shatri": 4,
+    "rifai": 5,
+    "husary": 6,
+    "minshawi": 9,
+    "shuraim": 10,
+}
+QDC_API = "https://api.qurancdn.com/api/qdc"
+
+# Reciters without quran.com word timings but with Mp3Quran ayat_timing
+# (RECITERS_TIMING_ID) for their full-surah recording: ayah boundaries come
+# from that data, refined against the pauses in the audio, and the clip is
+# cut from the continuous recording so breaths between ayat stay natural.
+# Words inside an ayah are placed by letter count over the voiced parts,
+# split at the reciter's pauses (see _voiced_word_times).
+RECITERS_AYAH_TIMING = {"ajmi", "mousa", "raad_alkurdi"}
+MP3QURAN_TIMING_API = "https://www.mp3quran.net/api/v3/ayat_timing"
+
 HUROOF_MUQATTAAH = {
     "الم": "ألف لام ميم",
     "المص": "ألف لام ميم صاد",
@@ -148,10 +178,11 @@ def clean_arabic(text):
     text = re.sub(r'[\u0617-\u061A\u064B-\u0652\u06D6-\u06DC\u06DF-\u06E8\u06EA-\u06ED]', '', text)
     return text.strip()
 
-def download_full_surah(reciter_id, surah_id):
-    url = RECITERS_MP3QURAN[reciter_id].format(surah=surah_id)
-    # Use persistent cache directory instead of temp
-    cache_file = SURAH_CACHE_DIR / f"{reciter_id}_{surah_id:03d}_full.mp3"
+def download_full_surah(reciter_id, surah_id, url=None, cache_prefix=""):
+    url = url or RECITERS_MP3QURAN[reciter_id].format(surah=surah_id)
+    # Use persistent cache directory instead of temp. cache_prefix keeps a
+    # different recording of the same reciter (e.g. QDC vs Mp3Quran) apart.
+    cache_file = SURAH_CACHE_DIR / f"{cache_prefix}{reciter_id}_{surah_id:03d}_full.mp3"
     
     if cache_file.exists():
         logger.info(f"Full Surah {surah_id} for {reciter_id} found in cache.")
@@ -162,7 +193,7 @@ def download_full_surah(reciter_id, surah_id):
     logger.info(f"Downloading full Surah {surah_id} from {url}...")
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     
-    temp_file = WORK_DIR / f"temp_raw_{reciter_id}_{surah_id:03d}.mp3"
+    temp_file = WORK_DIR / f"temp_raw_{cache_prefix}{reciter_id}_{surah_id:03d}.mp3"
     with urllib.request.urlopen(req, timeout=120) as response:
         with open(temp_file, 'wb') as f:
             f.write(response.read())
@@ -457,11 +488,595 @@ def _extract_from_word_timings(reciter_id, surah_id, start_ayah, end_ayah, pad_s
     return str(final_clip_path), str(final_json_path)
 
 
+# ========== QURAN.COM (QDC) WORD TIMINGS ==========
+
+_qdc_lock = threading.Lock()
+
+
+def _qdc_get_json(url):
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.loads(response.read().decode())
+
+
+def _qdc_cached(name, url):
+    """Fetch a QDC API response once and keep it next to the surah audio --
+    timings and word texts for a recording never change."""
+    cache_file = SURAH_CACHE_DIR / name
+    with _qdc_lock:
+        if cache_file.exists():
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        data = _qdc_get_json(url)
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        return data
+
+
+_ALEF_FORMS = {"\u0671": "\u0627", "\u0623": "\u0627", "\u0625": "\u0627", "\u0622": "\u0627", "\u0649": "\u064A"}
+
+
+def _qdc_letters(text):
+    """Base letters only -- drops harakat, Quranic annotation marks, tatweel
+    and small letters (anything but a non-modifier letter), and unifies alef
+    forms -- so QDC's and alquran.cloud's spellings of a word compare equal."""
+    out = []
+    for ch in unicodedata.normalize("NFC", text):
+        cat = unicodedata.category(ch)
+        if cat.startswith("L") and cat != "Lm":
+            out.append(_ALEF_FORMS.get(ch, ch))
+    return "".join(out)
+
+
+def _map_qdc_to_tokens(tokens, qdc_words, qdc_times):
+    """Timings for each alquran.cloud token of one ayah, from QDC's word
+    timings. The two tokenizations differ (alquran.cloud splits pause marks
+    into their own tokens, writes a few words apart that QDC joins, and keeps
+    the Basmala inside ayah 1 of some surahs), so they're aligned letter by
+    letter instead of by index. A QDC word covering several tokens is split
+    between them by letter count; tokens with no letters in the recording
+    (pause marks, an extra Basmala) get None."""
+    import difflib
+    a_chars, a_owner = [], []
+    for i, t in enumerate(tokens):
+        for ch in _qdc_letters(t):
+            a_chars.append(ch)
+            a_owner.append(i)
+    q_chars, q_owner = [], []
+    for j, w in enumerate(qdc_words):
+        for ch in _qdc_letters(w):
+            q_chars.append(ch)
+            q_owner.append(j)
+
+    # How many letters of QDC word j matched each token.
+    per_word = [dict() for _ in qdc_words]
+    sm = difflib.SequenceMatcher(None, a_chars, q_chars, autojunk=False)
+    for blk in sm.get_matching_blocks():
+        for k in range(blk.size):
+            ti, qj = a_owner[blk.a + k], q_owner[blk.b + k]
+            per_word[qj][ti] = per_word[qj].get(ti, 0) + 1
+
+    times = [None] * len(tokens)
+    for j, counts in enumerate(per_word):
+        if not counts:
+            continue
+        ws, we = qdc_times[j]
+        total = sum(counts.values())
+        cursor = ws
+        for ti in sorted(counts):
+            piece_end = cursor + (we - ws) * counts[ti] / total
+            if times[ti] is None:
+                times[ti] = [cursor, piece_end]
+            else:
+                times[ti] = [min(times[ti][0], cursor), max(times[ti][1], piece_end)]
+            cursor = piece_end
+    return times
+
+
+# Pauses shorter than this, or quieter parts of a recitation above this
+# level, don't count as silence between ayat.
+SILENCE_DB = -35
+SILENCE_MIN_SECONDS = 0.2
+# How far from quran.com's ayah boundary a pause may be and still be taken
+# as that boundary.
+BOUNDARY_SNAP_WINDOW = 1.5
+
+
+# For recordings with reverb or background noise the pauses between ayat
+# never get quiet enough for silencedetect, which compares every single
+# sample against its threshold (one echo peak breaks the pause). "adaptive"
+# instead looks at loudness per short frame and treats frames this far below
+# the reciter's typical (median) level as a pause.
+ADAPTIVE_PAUSE_BELOW_MEDIAN_DB = 8
+PAUSE_FRAME_SECONDS = 0.05
+
+
+def _detect_pauses_rms(audio_path):
+    """Pauses from per-frame RMS loudness, relative to the recording's median
+    frame level. Streams the decoded audio so a two-hour surah stays cheap."""
+    import numpy as np
+    sr = 8000
+    frame = int(sr * PAUSE_FRAME_SECONDS)
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(audio_path), "-ac", "1", "-ar", str(sr),
+                             "-f", "s16le", "-"], stdout=subprocess.PIPE)
+    levels, leftover = [], b""
+    while True:
+        chunk = proc.stdout.read(frame * 2 * 1200)
+        if not chunk:
+            break
+        data = leftover + chunk
+        usable = len(data) // (frame * 2) * frame * 2
+        leftover = data[usable:]
+        samples = np.frombuffer(data[:usable], np.int16).astype(np.float32) / 32768.0
+        rms = np.sqrt((samples.reshape(-1, frame) ** 2).mean(axis=1)) + 1e-9
+        levels.append(20 * np.log10(rms))
+    proc.wait()
+    if not levels:
+        return []
+    db = np.concatenate(levels)
+    voiced = db[db > -60]
+    if len(voiced) == 0:
+        return []
+    threshold = float(np.median(voiced)) - ADAPTIVE_PAUSE_BELOW_MEDIAN_DB
+    quiet = db < threshold
+    pauses, start = [], None
+    for i, q in enumerate(quiet):
+        if q and start is None:
+            start = i
+        elif not q and start is not None:
+            if (i - start) * PAUSE_FRAME_SECONDS >= SILENCE_MIN_SECONDS:
+                pauses.append((start * PAUSE_FRAME_SECONDS, i * PAUSE_FRAME_SECONDS))
+            start = None
+    if start is not None and (len(quiet) - start) * PAUSE_FRAME_SECONDS >= SILENCE_MIN_SECONDS:
+        pauses.append((start * PAUSE_FRAME_SECONDS, len(quiet) * PAUSE_FRAME_SECONDS))
+    return pauses
+
+
+def _detect_silences(audio_path, adaptive=False):
+    """[(start, end), ...] of every pause in the recording, cached next to it."""
+    suffix = "_silences_adaptive.json" if adaptive else "_silences.json"
+    cache_file = audio_path.with_name(audio_path.stem + suffix)
+    if cache_file.exists():
+        with open(cache_file, "r", encoding="utf-8") as f:
+            return [tuple(x) for x in json.load(f)]
+    silences = _detect_silences_uncached(audio_path, adaptive)
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(silences, f)
+    return silences
+
+
+def _detect_silences_uncached(audio_path, adaptive=False):
+    if adaptive:
+        return _detect_pauses_rms(audio_path)
+    out = subprocess.run(
+        ["ffmpeg", "-v", "info", "-nostats", "-i", str(audio_path),
+         "-af", f"silencedetect=n={SILENCE_DB}dB:d={SILENCE_MIN_SECONDS}", "-f", "null", "-"],
+        capture_output=True, text=True).stderr
+    silences, start = [], None
+    for m in re.finditer(r"silence_(start|end): (-?[0-9.]+)", out):
+        if m.group(1) == "start":
+            start = max(0.0, float(m.group(2)))
+        elif start is not None:
+            silences.append((start, float(m.group(2))))
+            start = None
+    return silences
+
+
+def _snap_ayah_boundaries(ayahs, q_by_ayah, from_by_ayah, silences):
+    """quran.com's word segments can put an ayah's first word ~0.5-1s early
+    and cut its last word's madd short (observed: Mishary, An-Nasr 2-3),
+    while the recording itself has a clear pause between ayat. Move each
+    ayah's first word start to the end of the pause nearest quran.com's own
+    ayah start, and the previous ayah's last word end to where that pause
+    begins. With no pause nearby (ayat recited joined), only clamp to
+    quran.com's ayah start. Edits q_by_ayah in place."""
+    def nearest(t):
+        best, best_d = None, BOUNDARY_SNAP_WINDOW
+        for s0, s1 in silences:
+            d = 0.0 if s0 <= t <= s1 else min(abs(t - s0), abs(t - s1))
+            if d <= best_d:
+                best, best_d = (s0, s1), d
+        return best
+
+    prev = None
+    for ayah in ayahs:
+        cur = q_by_ayah.get(ayah)
+        if not cur:
+            continue
+        first_start, first_end = cur[0]
+        target = from_by_ayah[ayah] if prev is not None else first_start
+        sil = nearest(target)
+        new_start = sil[1] - 0.03 if sil is not None else None
+        # A "pause" reaching past the whole first word is more likely quiet
+        # recitation than silence -- don't trust it for the start.
+        if new_start is not None and new_start < first_end - 0.05 and (prev is None or new_start > prev[-1][0] + 0.05):
+            cur[0] = (new_start, first_end)
+            # The previous ayah's recitation runs until the pause begins.
+            if prev is not None and prev[-1][1] <= sil[1] + 0.1:
+                prev[-1] = (prev[-1][0], max(prev[-1][0] + 0.05, sil[0] + 0.05))
+        elif prev is not None and first_start < target < first_end - 0.05:
+            cur[0] = (target, first_end)
+        prev = cur
+
+    # The surah's final ayah: its last word lasts until the closing pause.
+    if prev:
+        last_start, last_end = prev[-1]
+        after = [s0 for s0, _ in silences if last_end - 0.2 <= s0 <= last_end + 3.0]
+        if after:
+            prev[-1] = (last_start, max(last_end, after[0] + 0.05))
+
+
+def _speech_bounds(a0, a1, silences):
+    """[a0, a1] with any pause touching either edge cut off (within a small
+    tolerance -- frame rounding can leave a pause a few ms short of the
+    file's end)."""
+    tol = 0.15
+    start, end = a0, a1
+    for s0, s1 in silences:
+        if s0 - tol <= start < s1:
+            start = max(start, s1)
+        if s0 < end <= s1 + tol:
+            end = min(end, s0)
+    return (start, end) if end - start > 0.1 else (a0, a1)
+
+
+def _voiced_word_times(tokens, a0, a1, silences):
+    """Word timings for one ayah spoken within [a0, a1] (seconds), without
+    any speech recognition: the reciter's pauses inside the ayah split it
+    into voiced chunks, each pause is matched to the word boundary whose
+    letter-count position is closest (preferring one right after a pause
+    mark), and words share each chunk by letter count. Tokens without
+    letters (pause marks) get None."""
+    weights = [len(_qdc_letters(t)) for t in tokens]
+    total_w = sum(weights)
+    if total_w == 0:
+        return [None] * len(tokens)
+
+    a0, a1 = _speech_bounds(a0, a1, silences)
+    inner = [(max(s0, a0), min(s1, a1)) for s0, s1 in silences if s0 > a0 + 0.1 and s1 < a1 - 0.1]
+    chunks, cursor = [], a0
+    for s0, s1 in inner:
+        chunks.append((cursor, s0))
+        cursor = s1
+    chunks.append((cursor, a1))
+    voiced_total = sum(e - b for b, e in chunks) or (a1 - a0)
+
+    # Candidate word boundaries: index j = first token of the next chunk.
+    word_idx = [i for i, w in enumerate(weights) if w > 0]
+    cum_before = {}
+    acc = 0
+    for i, w in enumerate(weights):
+        cum_before[i] = acc / total_w
+        acc += w
+
+    def after_pause_mark(j):
+        return j > 0 and weights[j - 1] == 0
+
+    cuts = []  # token index where each chunk after the first starts
+    voiced_so_far = 0.0
+    for k, (b, e) in enumerate(chunks[:-1]):
+        voiced_so_far += e - b
+        frac = voiced_so_far / voiced_total
+        remaining_cuts = len(chunks) - 2 - k
+        options = [j for j in word_idx
+                   if j > (cuts[-1] if cuts else 0)
+                   and sum(1 for x in word_idx if x >= j) > remaining_cuts]
+        if not options:
+            break
+        best = min(options, key=lambda j: abs(cum_before[j] - frac) - (0.05 if after_pause_mark(j) else 0))
+        cuts.append(best)
+
+    if len(cuts) != len(chunks) - 1:
+        # Couldn't place every pause -- treat the ayah as one voiced run.
+        chunks, cuts = [(a0, a1)], []
+
+    times = [None] * len(tokens)
+    bounds = [0] + cuts + [len(tokens)]
+    for (b, e), t0, t1 in zip(chunks, bounds, bounds[1:]):
+        group_w = sum(weights[t0:t1])
+        cur = b
+        for i in range(t0, t1):
+            if weights[i] == 0:
+                continue
+            dur = (e - b) * weights[i] / group_w if group_w else 0.0
+            times[i] = [cur, cur + dur]
+            cur += dur
+    return times
+
+
+def _ayah_word_json(tokens, times, offset, prev_start):
+    """Clip-relative word entries (ms) for one ayah; same rules as the QDC
+    path: starts never move backwards, pause marks become blips."""
+    out = []
+    for word, t in zip(tokens, times):
+        if t is None:
+            start_ms = prev_start
+            end_ms = start_ms + 50
+        else:
+            start_ms = max(prev_start, int((t[0] - offset) * 1000))
+            end_ms = max(start_ms + 50, int((t[1] - offset) * 1000))
+        out.append({"w": word, "start": start_ms, "end": end_ms})
+        prev_start = start_ms
+    return out, prev_start
+
+
+def _register_ayah_timing(by_ayah, duration, silences):
+    """(ratio, shift) mapping Mp3Quran's ayah times onto this file. The file
+    and the timing data don't always have the same length (extra silence at
+    the end, a different intro), so rather than assuming a stretch, try no
+    stretch and the length ratio, each with a small shift, and keep whichever
+    puts the most ayah boundaries inside actual pauses. Ties favour no
+    stretch and the smallest shift."""
+    api_total = max(e for _, e in by_ayah.values())
+    starts = [st for st, _ in by_ayah.values() if st > 0.5]
+    if not starts or not silences:
+        return 1.0, 0.0
+
+    def score(ratio, shift):
+        hits = 0
+        for st in starts:
+            t = st * ratio + shift
+            if any(s0 - 0.15 <= t <= s1 + 0.15 for s0, s1 in silences):
+                hits += 1
+        return hits
+
+    baseline = score(1.0, 0.0)
+    best = (baseline, 0, 0.0, 1.0, 0.0)
+    ratios = [1.0] + ([duration / api_total] if api_total > 0 and abs(duration - api_total) > 0.5 else [])
+    for ri, ratio in enumerate(ratios):
+        for step in range(-150, 151):
+            shift = step * 0.02
+            cand = (score(ratio, shift), -ri, -abs(shift), ratio, shift)
+            if cand > best:
+                best = cand
+    # Only move away from the data as published when the evidence is clear
+    # -- a handful of lucky hits must not shift every ayah.
+    if best[0] < max(3, 0.3 * len(starts)) or best[0] < baseline + 2:
+        best = (baseline, 0, 0.0, 1.0, 0.0)
+    logger.info(f"Ayah timing registration: ratio={best[3]:.4f} shift={best[4]:+.2f}s "
+                f"({best[0]}/{len(starts)} ayah starts in pauses, {baseline} as published)")
+    return best[3], best[4]
+
+
+def _extract_from_ayah_timings(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                               final_clip_path, final_json_path):
+    """Mp3Quran full-surah recording + its ayah start/end times, with each
+    boundary moved onto the actual pause between the two ayat."""
+    ayahs_text = fetch_surah_texts(surah_id)
+    if start_ayah not in ayahs_text or end_ayah not in ayahs_text:
+        _fail(f"Ayah bounds error: surah {surah_id} has no ayah {start_ayah} or {end_ayah}.")
+
+    timing = _qdc_cached(f"mp3quran_{reciter_id}_{surah_id:03d}_timing.json",
+                         f"{MP3QURAN_TIMING_API}?surah={surah_id}&read={RECITERS_TIMING_ID[reciter_id]}")
+    if isinstance(timing, dict):
+        timing = timing.get("times") or timing.get("ayat_timing") or next(
+            (v for v in timing.values() if isinstance(v, list)), [])
+    by_ayah = {int(t["ayah"]): (float(t["start_time"]) / 1000.0, float(t["end_time"]) / 1000.0)
+               for t in timing if int(t.get("ayah", 0)) > 0}
+    if start_ayah not in by_ayah or end_ayah not in by_ayah:
+        _fail(f"Mp3Quran has no ayah timing for {start_ayah}-{end_ayah} of surah {surah_id}.")
+
+    full_audio_path = download_full_surah(reciter_id, surah_id)
+    duration = float(subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(full_audio_path)], text=True).strip())
+    silences = _detect_silences(full_audio_path, adaptive=True)
+    ratio, shift = _register_ayah_timing(by_ayah, duration, silences)
+
+    def nearest_pause(t):
+        best, best_d = None, BOUNDARY_SNAP_WINDOW
+        for s0, s1 in silences:
+            d = 0.0 if s0 <= t <= s1 else min(abs(t - s0), abs(t - s1))
+            if d <= best_d:
+                best, best_d = (s0, s1), d
+        return best
+
+    # Speech region of each ayah: from the pause before it ends to the
+    # pause after it begins.
+    regions = {}
+    for a in range(start_ayah, end_ayah + 1):
+        t_start, t_end = by_ayah[a][0] * ratio + shift, by_ayah[a][1] * ratio + shift
+        p = nearest_pause(t_start)
+        a0 = p[1] if p else t_start
+        p = nearest_pause(t_end)
+        a1 = p[0] if p and p[0] > a0 + 0.3 else t_end
+        regions[a] = (a0, max(a1, a0 + 0.3))
+
+    slice_start = max(0.0, regions[start_ayah][0] - 0.250 - pad_seconds)
+    slice_end = min(duration, regions[end_ayah][1] + 0.3 + pad_seconds)
+    clip_duration = slice_end - slice_start
+    fade = min(0.150, clip_duration / 4)
+    logger.info(f"=== Slicing {start_ayah}-{end_ayah} at {slice_start:.2f}s-{slice_end:.2f}s (Mp3Quran ayah timings) ===")
+    subprocess.run([
+        "ffmpeg", "-y", "-ss", str(slice_start), "-i", str(full_audio_path), "-t", str(clip_duration), "-vn",
+        "-af", f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={clip_duration - fade:.3f}:d={fade:.3f}",
+        "-b:a", "192k", str(final_clip_path)
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if not final_clip_path.exists() or final_clip_path.stat().st_size < 1024:
+        _fail("Slice produced an empty or missing clip.")
+
+    verses, prev_start = {}, 0
+    for a in range(start_ayah, end_ayah + 1):
+        tokens = ayahs_text[a]["uthmani"]
+        times = _voiced_word_times(tokens, regions[a][0], regions[a][1], silences)
+        words, prev_start = _ayah_word_json(tokens, times, slice_start, prev_start)
+        verses[str(a)] = {"words": words}
+    _write_clip_json(final_json_path, surah_id, start_ayah, end_ayah, reciter_id, pad_seconds, "mp3quran_timing", verses)
+    logger.info(f"Done. Extracted: {final_clip_path}")
+    return str(final_clip_path), str(final_json_path)
+
+
+def _write_clip_json(path, surah_id, start_ayah, end_ayah, reciter_id, pad_seconds, source, verses):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({
+            "surah": surah_id, "start_ayah": start_ayah, "end_ayah": end_ayah, "reciter": reciter_id,
+            "pad_seconds": pad_seconds,
+            "source": source,
+            "lowConfidenceEnd": False,
+            "verses": verses,
+        }, f, ensure_ascii=False, indent=2)
+
+
+def _qdc_surah_timings(reciter_id, surah_id, ayahs_text, silences=()):
+    """{"audio_url", "verses": {ayah: {"from", "to", "words": [[s, e] | None
+    per alquran.cloud token]}}} in seconds, for this reciter's QDC recording.
+    `silences` (see _detect_silences) refines the ayah boundaries."""
+    rid = RECITERS_QDC[reciter_id]
+    audio = _qdc_cached(f"qdc_{reciter_id}_{surah_id:03d}_audio.json",
+                        f"{QDC_API}/audio/reciters/{rid}/audio_files?chapter={surah_id}&segments=true")
+    words = _qdc_cached(f"qdc_{surah_id:03d}_words.json",
+                        f"{QDC_API}/verses/by_chapter/{surah_id}?words=true&word_fields=text_uthmani&per_page=300")
+
+    audio_file = audio["audio_files"][0]
+    qdc_words_by_ayah = {}
+    for v in words["verses"]:
+        ayah = int(v["verse_key"].split(":")[1])
+        # (position, text) of real words only -- not the ayah-number glyph.
+        qdc_words_by_ayah[ayah] = [
+            (w["position"], w["text_uthmani"]) for w in v["words"]
+            if w.get("char_type_name") == "word" and _qdc_letters(w["text_uthmani"])
+        ]
+
+    verses = {}
+    for vt in audio_file["verse_timings"]:
+        ayah = int(vt["verse_key"].split(":")[1])
+        v_from, v_to = vt["timestamp_from"] / 1000.0, vt["timestamp_to"] / 1000.0
+        # Reciters often stop and go back a few words (e.g. Mishary in 2:14
+        # reads words 1-11, repeats 7-11, then continues), so a position can
+        # appear several times, in order. Each word spans from the FIRST
+        # time it starts to the LAST time it ends: its segment then stays on
+        # screen through the whole passage, repeat included.
+        seg_by_pos = {}
+        verse_max_end = None
+        for seg in vt.get("segments") or []:
+            # A few QDC segments are malformed (missing fields) -- skip them.
+            if len(seg) >= 3 and all(isinstance(x, (int, float)) for x in seg[:3]):
+                pos, ws, we = int(seg[0]), seg[1] / 1000.0, seg[2] / 1000.0
+                first = seg_by_pos.get(pos)
+                seg_by_pos[pos] = (first[0], max(first[1], we)) if first else (ws, we)
+                verse_max_end = we if verse_max_end is None else max(verse_max_end, we)
+
+        qw = qdc_words_by_ayah.get(ayah, [])
+        q_times = [seg_by_pos.get(pos) for pos, _ in qw]
+        # Words without a segment are spread over the gap between their
+        # timed neighbours (or the ayah bounds).
+        k = 0
+        while k < len(q_times):
+            if q_times[k] is not None:
+                k += 1
+                continue
+            run_end = k
+            while run_end < len(q_times) and q_times[run_end] is None:
+                run_end += 1
+            gap_end = q_times[run_end][0] if run_end < len(q_times) else v_to
+            gap_start = min(q_times[k - 1][1], gap_end) if k > 0 else v_from
+            step = max(0.0, gap_end - gap_start) / (run_end - k)
+            for j in range(k, run_end):
+                q_times[j] = (gap_start + (j - k) * step, gap_start + (j - k + 1) * step)
+            k = run_end
+        # A repeat of the ayah's closing words must stay inside the ayah.
+        if q_times and verse_max_end is not None and verse_max_end > q_times[-1][1]:
+            q_times[-1] = (q_times[-1][0], verse_max_end)
+
+        verses[ayah] = {"from": v_from, "to": v_to, "qw": qw, "q_times": q_times}
+
+    ayahs = sorted(verses)
+    _snap_ayah_boundaries(
+        ayahs,
+        {a: verses[a]["q_times"] for a in ayahs},
+        {a: verses[a]["from"] for a in ayahs},
+        silences,
+    )
+    for ayah in ayahs:
+        v = verses[ayah]
+        tokens = ayahs_text.get(ayah, {}).get("uthmani", [])
+        v["words"] = _map_qdc_to_tokens(tokens, [t for _, t in v.pop("qw")], v.pop("q_times"))
+    return {"audio_url": audio_file["audio_url"], "verses": verses}
+
+
+def _extract_from_qdc(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                      final_clip_path, final_json_path):
+    ayahs_text = fetch_surah_texts(surah_id)
+    if start_ayah not in ayahs_text or end_ayah not in ayahs_text:
+        _fail(f"Ayah bounds error: surah {surah_id} has no ayah {start_ayah} or {end_ayah}.")
+
+    # The recording the timings were made for -- NOT the Mp3Quran one.
+    rid = RECITERS_QDC[reciter_id]
+    audio_meta = _qdc_cached(f"qdc_{reciter_id}_{surah_id:03d}_audio.json",
+                             f"{QDC_API}/audio/reciters/{rid}/audio_files?chapter={surah_id}&segments=true")
+    full_audio_path = download_full_surah(reciter_id, surah_id, url=audio_meta["audio_files"][0]["audio_url"],
+                                          cache_prefix="qdc_")
+    duration = float(subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(full_audio_path)], text=True).strip())
+
+    data = _qdc_surah_timings(reciter_id, surah_id, ayahs_text, _detect_silences(full_audio_path))
+    verses_t = data["verses"]
+    if start_ayah not in verses_t or end_ayah not in verses_t:
+        _fail(f"Quran.com has no timings for ayah {start_ayah}-{end_ayah} of surah {surah_id}.")
+
+    first_timed = [t for t in verses_t[start_ayah]["words"] if t]
+    last_timed = [t for t in verses_t[end_ayah]["words"] if t]
+    clip_from = min([verses_t[start_ayah]["from"]] + [t[0] for t in first_timed])
+    clip_to = max([verses_t[end_ayah]["to"]] + [t[1] for t in last_timed])
+    slice_start = max(0.0, clip_from - 0.250 - pad_seconds)
+    slice_end = min(duration, clip_to + pad_seconds)
+    clip_duration = slice_end - slice_start
+    fade = min(0.150, clip_duration / 4)
+
+    logger.info(f"=== Slicing {start_ayah}-{end_ayah} at {slice_start:.2f}s-{slice_end:.2f}s (quran.com word timings) ===")
+    subprocess.run([
+        "ffmpeg", "-y", "-ss", str(slice_start), "-i", str(full_audio_path), "-t", str(clip_duration), "-vn",
+        "-af", f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={clip_duration - fade:.3f}:d={fade:.3f}",
+        "-b:a", "192k", str(final_clip_path)
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if not final_clip_path.exists() or final_clip_path.stat().st_size < 1024:
+        _fail("Slice produced an empty or missing clip.")
+
+    # Starts only ever move forward; ends may overlap the next word's start
+    # when the reciter went back and repeated it (see _qdc_surah_timings).
+    verses = {}
+    prev_start = 0
+    for a in range(start_ayah, end_ayah + 1):
+        v = verses_t.get(a)
+        tokens = ayahs_text[a]["uthmani"]
+        times = v["words"] if v else [None] * len(tokens)
+        out = []
+        for word, t in zip(tokens, times):
+            if t is None:
+                # Pause mark / Basmala token: a blip at the previous word's
+                # start, so it never pushes the following word later.
+                start_ms = prev_start
+                end_ms = start_ms + 50
+            else:
+                start_ms = max(prev_start, int((t[0] - slice_start) * 1000))
+                end_ms = max(start_ms + 50, int((t[1] - slice_start) * 1000))
+            out.append({"w": word, "start": start_ms, "end": end_ms})
+            prev_start = start_ms
+        verses[str(a)] = {"words": out}
+
+    with open(final_json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "surah": surah_id, "start_ayah": start_ayah, "end_ayah": end_ayah, "reciter": reciter_id,
+            "pad_seconds": pad_seconds,
+            "source": "qdc",
+            "lowConfidenceEnd": False,
+            "verses": verses,
+        }, f, ensure_ascii=False, indent=2)
+    logger.info(f"Done. Extracted: {final_clip_path}")
+    return str(final_clip_path), str(final_json_path)
+
+
 def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
-    if reciter_id not in RECITERS_MP3QURAN:
+    if reciter_id not in RECITERS_MP3QURAN and reciter_id not in RECITERS_QDC:
         _fail(f"Reciter '{reciter_id}' not found.")
 
-    clip_name = f"{reciter_id}_{surah_id:03d}_{start_ayah}-{end_ayah}"
+    # "qdc" in the name: a clip cached from the older Mp3Quran/Whisper path
+    # for the same reciter must never be reused for the QDC one.
+    source_tag = ("_qdc" if reciter_id in RECITERS_QDC
+                  else "_at" if reciter_id in RECITERS_AYAH_TIMING
+                  else "")
+    clip_name = f"{reciter_id}{source_tag}_{surah_id:03d}_{start_ayah}-{end_ayah}"
     final_clip_path = OUTPUT_DIR / f"{clip_name}.mp3"
     final_json_path = OUTPUT_DIR / f"{clip_name}.json"
 
@@ -496,6 +1111,23 @@ def extract_clip(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds=0.0):
         final_json_path.unlink()
     if final_clip_path.exists():
         final_clip_path.unlink()
+
+    if reciter_id in RECITERS_QDC:
+        return _extract_from_qdc(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                                 final_clip_path, final_json_path)
+
+    if reciter_id in RECITERS_AYAH_TIMING:
+        try:
+            return _extract_from_ayah_timings(reciter_id, surah_id, start_ayah, end_ayah, pad_seconds,
+                                              final_clip_path, final_json_path)
+        except Exception as e:
+            # Source down or incomplete -- the older Whisper pipeline below
+            # still works from the full-surah recording.
+            logger.warning(f"Per-ayah extraction failed for {reciter_id} {surah_id}:{start_ayah}-{end_ayah} "
+                           f"({e}) -- falling back to Whisper alignment.")
+            for path in (final_clip_path, final_json_path):
+                if path.exists():
+                    path.unlink()
 
     logger.info("=== Phase 1: Preparation ===")
     full_audio_path = None

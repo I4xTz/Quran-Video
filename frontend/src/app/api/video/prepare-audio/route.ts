@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import axios from "axios";
 import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
+import { getReciter } from "@/lib/reciters";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,15 +67,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid video options" }, { status: 400 });
     }
 
-    const RECITER_KEYS: Record<string, string> = {
-      mishary_alafasy: "mishary",
-      maher_muaiqly: "maher",
-      ahmed_ajmi: "ajmi",
-      yasser_dosari: "yasser",
-      abdullah_mousa: "mousa",
-      raad_alkurdi: "raad_alkurdi"
-    };
-    const shortReciterKey = RECITER_KEYS[reciterId] || "mishary";
+    const shortReciterKey = getReciter(reciterId).backendKey;
 
     const baseUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://backend:8000";
     let wordTimingsData: any = null;

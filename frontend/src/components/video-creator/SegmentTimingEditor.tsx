@@ -445,19 +445,39 @@ export default function SegmentTimingEditor({
     boundaries[0] = trimStart;
     boundaries[n] = trimEnd;
     const span = trimEnd - trimStart;
-    const rawWidths = segs.map((s) => Math.max(0, s.endSec - s.startSec));
-    const rawTotal = rawWidths.reduce((a, b) => a + b, 0);
-    let widths = rawTotal > 0 && span > 0
-      ? rawWidths.map((w) => (w / rawTotal) * span)
-      : new Array(n).fill(span / n);
     const minW = Math.min(MIN_REGION_WIDTH, span / n);
-    widths = widths.map((w) => Math.max(minW, w));
-    const widthSum = widths.reduce((a, b) => a + b, 0);
-    if (widthSum > 0) widths = widths.map((w) => (w / widthSum) * span);
-    let cursor = trimStart;
-    for (let k = 0; k < n; k++) {
-      cursor += widths[k];
-      boundaries[k + 1] = k === n - 1 ? trimEnd : cursor;
+
+    // Each interior boundary sits at the NEXT segment's own start time --
+    // the silence after a segment belongs to it (same as render/route.ts,
+    // where a verse lasts until the next one begins). This keeps accurate
+    // word timings exactly where they are.
+    let usesRealStarts = true;
+    for (let k = 1; k < n; k++) {
+      const s = segs[k].startSec;
+      if (!(s >= boundaries[k - 1] + minW && s <= trimEnd - (n - k) * minW)) {
+        usesRealStarts = false;
+        break;
+      }
+      boundaries[k] = s;
+    }
+
+    // Fallback only when the start times can't form valid regions (e.g.
+    // missing timings): spread the span proportionally to each segment's
+    // duration.
+    if (!usesRealStarts) {
+      const rawWidths = segs.map((s) => Math.max(0, s.endSec - s.startSec));
+      const rawTotal = rawWidths.reduce((a, b) => a + b, 0);
+      let widths = rawTotal > 0 && span > 0
+        ? rawWidths.map((w) => (w / rawTotal) * span)
+        : new Array(n).fill(span / n);
+      widths = widths.map((w) => Math.max(minW, w));
+      const widthSum = widths.reduce((a, b) => a + b, 0);
+      if (widthSum > 0) widths = widths.map((w) => (w / widthSum) * span);
+      let cursor = trimStart;
+      for (let k = 0; k < n; k++) {
+        cursor += widths[k];
+        boundaries[k + 1] = k === n - 1 ? trimEnd : cursor;
+      }
     }
 
     // Dark, non-interactive shading over whatever falls outside the trim
