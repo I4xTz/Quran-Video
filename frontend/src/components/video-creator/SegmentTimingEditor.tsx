@@ -1249,8 +1249,15 @@ export default function SegmentTimingEditor({
             </div>
           )}
 
+          {/* Always LTR, whatever the panel's own direction: WaveSurfer only
+              draws the canvases around its scroll position and assumes
+              scrollLeft counts up from 0 at the START of the audio. Under
+              RTL the scroller opens on the END of the audio with scrollLeft
+              0 (going negative from there), so once zoomed in far enough to
+              scroll it drew the wrong chunks and the visible part was blank. */}
           <div
             ref={containerRef}
+            dir="ltr"
             className={`w-full min-h-[140px] flex-shrink-0 bg-background rounded-xl border border-border p-2 overflow-x-auto overflow-y-hidden transition-opacity duration-300 ${
               isReady ? "opacity-100" : "opacity-0 hidden"
             }`}

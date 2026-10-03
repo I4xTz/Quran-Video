@@ -77,6 +77,20 @@ const MAX_INSET_PERCENT = 18;
 // be dragged up or down from its original position.
 const MAX_OFFSET_Y_PERCENT = 40;
 
+// The number shown in each block's height box: 50 is the block's original
+// position and a bigger number is higher up, so it reads like a height
+// rather than the stored offset (0 = original, positive = further DOWN).
+const HEIGHT_AT_ORIGIN = 50;
+const MIN_HEIGHT_VALUE = HEIGHT_AT_ORIGIN - MAX_OFFSET_Y_PERCENT;
+const MAX_HEIGHT_VALUE = HEIGHT_AT_ORIGIN + MAX_OFFSET_Y_PERCENT;
+
+// The number shown in each block's size box: the text scale as a percent,
+// so 100 is the original size.
+const MIN_SIZE_VALUE = Math.round(MIN_TEXT_SCALE * 100);
+const MAX_SIZE_VALUE = Math.round(MAX_TEXT_SCALE * 100);
+
+type NumberField = "height" | "size";
+
 function scaleToInsetPercent(scale: number): number {
   const t = (MAX_WIDTH_SCALE - scale) / (MAX_WIDTH_SCALE - MIN_WIDTH_SCALE);
   return Math.max(0, Math.min(MAX_INSET_PERCENT, t * MAX_INSET_PERCENT));
@@ -301,6 +315,18 @@ export default function VideoPreviewPlayer({
   const [lineEdit, setLineEdit] = useState<LineEditState | null>(null);
   const [caretRect, setCaretRect] = useState<BoxRect | null>(null);
   const canEditLines = !!onArabicLineBreaksChange && !!onTranslationLinesChange;
+  // The height/size box being typed into (see renderTextBlockControl): its
+  // raw text while focused, so a half-typed number isn't rewritten under
+  // the user, and its block stays active even if the pointer wanders off.
+  // `initial` is the value when typing began, restored by Escape.
+  const [numberEdit, setNumberEdit] = useState<{
+    block: TextBlock;
+    field: NumberField;
+    text: string;
+    initial: number;
+  } | null>(null);
+  const numberEditCancelledRef = useRef(false);
+  const numberEditBlock = numberEdit?.block ?? null;
 
   // Each falls back to inputProps.textScale (the older, shared field) so a
   // draft/render saved before these two were split independently still
@@ -586,7 +612,7 @@ export default function VideoPreviewPlayer({
   // real size visibly changes as a corner-drag changes font size, and which
   // verse/segment is on screen changes as the video plays.
   useEffect(() => {
-    if (!hoveredBlock && !dragging && !lineEdit) return;
+    if (!hoveredBlock && !dragging && !lineEdit && !numberEditBlock) return;
     let raf = 0;
     const tick = () => {
       setBoxRects({ arabic: measureBlock("arabic"), translation: measureBlock("translation") });
@@ -602,7 +628,7 @@ export default function VideoPreviewPlayer({
     tick();
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoveredBlock, dragging, lineEdit]);
+  }, [hoveredBlock, dragging, lineEdit, numberEditBlock]);
 
   // On a mouse, moving the pointer off the block (onMouseLeave, above) is
   // what dismisses its box -- there's no equivalent "left" event for a tap,
@@ -924,6 +950,30 @@ export default function VideoPreviewPlayer({
       block === "arabic" ? "arabicOffsetY" : "translationOffsetY",
       block === "arabic" ? arabicOffsetY : translationOffsetY
     );
+  const heightValueOf = (block: TextBlock, segmentKey: string | null) =>
+    Math.round(HEIGHT_AT_ORIGIN - offsetYOf(block, segmentKey));
+  // Moves the block to a typed height, kept inside the same range a drag
+  // allows.
+  const applyHeightValue = (block: TextBlock, value: number) => {
+    const clamped = Math.max(MIN_HEIGHT_VALUE, Math.min(MAX_HEIGHT_VALUE, value));
+    (block === "arabic" ? onArabicOffsetYChange : onTranslationOffsetYChange)?.(
+      activeSegmentKeys[block],
+      HEIGHT_AT_ORIGIN - clamped
+    );
+    return clamped;
+  };
+  const sizeValueOf = (block: TextBlock, segmentKey: string | null) =>
+    Math.round(textScaleOf(block, segmentKey) * 100);
+  // Sets the block's text to a typed size, kept inside the same range a
+  // corner drag allows.
+  const applySizeValue = (block: TextBlock, value: number) => {
+    const clamped = Math.max(MIN_SIZE_VALUE, Math.min(MAX_SIZE_VALUE, value));
+    (block === "arabic" ? onArabicTextScaleChange : onTranslationTextScaleChange)?.(
+      activeSegmentKeys[block],
+      clamped / 100
+    );
+    return clamped;
+  };
   const centerTopOf = (block: TextBlock) => {
     const layout = BLOCK_LAYOUT[block];
     return isPortraitLayout ? layout.portraitCenterTop : layout.compactCenterTop;
@@ -1047,7 +1097,41 @@ export default function VideoPreviewPlayer({
     const scale = textScaleOf(block, activeSegmentKeys[block]);
     const widthScale = widthScaleOf(block, activeSegmentKeys[block]);
     const isEditingLines = lineEdit?.block === block;
-    const isActive = hoveredBlock === block || dragging?.block === block || isEditingLines;
+    const isActive =
+      hoveredBlock === block || dragging?.block === block || isEditingLines || numberEditBlock === block;
+    // The typed-number boxes on this block's top corner: each shows its
+    // value, follows a drag live, and applies a number typed into it.
+    const numberBoxes = [
+      {
+        field: "size" as const,
+        canEdit: !!(block === "arabic" ? onArabicTextScaleChange : onTranslationTextScaleChange),
+        value: sizeValueOf(block, activeSegmentKeys[block]),
+        min: MIN_SIZE_VALUE,
+        max: MAX_SIZE_VALUE,
+        apply: applySizeValue,
+        icon: "Aa",
+        suffix: "%",
+        label: isArabic ? "حجم النص" : "Metin boyutu",
+        title: isArabic
+          ? `حجم النص: اكتب رقماً من ${MIN_SIZE_VALUE} إلى ${MAX_SIZE_VALUE} (100 = الحجم الأصلي)`
+          : `Metin boyutu: ${MIN_SIZE_VALUE}-${MAX_SIZE_VALUE} arası bir sayı yazın (100 = özgün boyut)`,
+      },
+      {
+        // 50 = original position, bigger = higher.
+        field: "height" as const,
+        canEdit: !!(block === "arabic" ? onArabicOffsetYChange : onTranslationOffsetYChange),
+        value: heightValueOf(block, activeSegmentKeys[block]),
+        min: MIN_HEIGHT_VALUE,
+        max: MAX_HEIGHT_VALUE,
+        apply: applyHeightValue,
+        icon: "↕",
+        suffix: "",
+        label: isArabic ? "ارتفاع النص" : "Metin yüksekliği",
+        title: isArabic
+          ? `ارتفاع النص: اكتب رقماً من ${MIN_HEIGHT_VALUE} إلى ${MAX_HEIGHT_VALUE} (50 = الموضع الأصلي، الأكبر أعلى)`
+          : `Metin yüksekliği: ${MIN_HEIGHT_VALUE}-${MAX_HEIGHT_VALUE} arası bir sayı yazın (50 = özgün konum, büyük = daha yukarı)`,
+      },
+    ].filter((b) => b.canEdit);
     const box = boxRects[block];
     const otherBox = boxRects[block === "arabic" ? "translation" : "arabic"];
     const accentBorder = layout.accent === "amber" ? "border-accent-amber" : "border-primary-light";
@@ -1227,6 +1311,80 @@ export default function VideoPreviewPlayer({
           >
             {isEditingLines ? (isArabic ? "✓ تم" : "✓ Bitti") : isArabic ? "↵ أسطر" : "↵ Satırlar"}
           </button>
+        )}
+        {isActive && box && numberBoxes.length > 0 && !isEditingLines && (
+          <div
+            // Sits on the corner opposite the lines button.
+            dir="ltr"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute z-[3] flex -translate-x-full -translate-y-1/2 items-center gap-1"
+            style={{
+              top: `${toRegionY(outlineTop)}%`,
+              left: `${toRegionX(box.left + box.width + BOX_PADDING_PERCENT)}%`,
+            }}
+          >
+            {numberBoxes.map(({ field, value, min, max, apply, icon, suffix, label, title }) => {
+              const editing = numberEdit?.block === block && numberEdit.field === field ? numberEdit : null;
+              return (
+                <label
+                  key={field}
+                  className={`flex items-center gap-1 whitespace-nowrap rounded-full border bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm ${accentBorder}/70`}
+                  title={title}
+                >
+                  <span aria-hidden>{icon}</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    dir="ltr"
+                    aria-label={label}
+                    value={editing ? editing.text : String(value)}
+                    onFocus={(e) => {
+                      numberEditCancelledRef.current = false;
+                      setNumberEdit({ block, field, text: String(value), initial: value });
+                      e.currentTarget.select();
+                    }}
+                    onChange={(e) => {
+                      const text = e.target.value.replace(/[^0-9]/g, "").slice(0, 3);
+                      setNumberEdit((prev) => ({ block, field, text, initial: prev?.initial ?? value }));
+                      // Applied as soon as it's a usable value -- a
+                      // half-typed number (the "6" of "62") is out of range
+                      // and so never makes the text jump on the way.
+                      const typed = Number(text);
+                      if (text && typed >= min && typed <= max) apply(block, typed);
+                    }}
+                    onBlur={() => {
+                      // Only an out-of-range number is still unapplied here
+                      // (see onChange); an untouched box is left alone so
+                      // merely focusing it never rounds the stored value.
+                      if (!numberEditCancelledRef.current && editing?.text && Number(editing.text) !== value) {
+                        apply(block, Number(editing.text));
+                      }
+                      setNumberEdit(null);
+                    }}
+                    onKeyDown={(e) => {
+                      // Keep the player's own shortcuts from firing while typing.
+                      e.stopPropagation();
+                      if (e.key === "Enter") {
+                        e.currentTarget.blur();
+                      } else if (e.key === "Escape") {
+                        numberEditCancelledRef.current = true;
+                        if (editing && editing.initial !== value) apply(block, editing.initial);
+                        e.currentTarget.blur();
+                      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                        e.preventDefault();
+                        const step = (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 5 : 1);
+                        const next = apply(block, value + step);
+                        setNumberEdit((prev) => ({ block, field, text: String(next), initial: prev?.initial ?? value }));
+                      }
+                    }}
+                    className="w-6 bg-transparent text-center tabular-nums outline-none"
+                  />
+                  {suffix && <span aria-hidden>{suffix}</span>}
+                </label>
+              );
+            })}
+          </div>
         )}
         {isActive && box && !isEditingLines && (
           <>
