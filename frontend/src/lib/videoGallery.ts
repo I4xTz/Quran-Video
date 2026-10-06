@@ -2,6 +2,8 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import type { AspectRatio } from "@/remotion/types";
+import type { GalleryPublishRecord, SocialPlatform } from "@/lib/social/platforms";
+import { deleteDraft } from "@/lib/drafts";
 
 // Manifest entries live under src/data/gallery (one JSON file per video,
 // same pattern as src/data/drafts) and the actual mp4 copies live under
@@ -48,9 +50,13 @@ export type GalleryEntry = {
   // before this field existed, or if the autosave that should have
   // produced it failed -- Edit is simply hidden for those.
   draftId?: string;
+  // Where THIS exact mp4 has been published (see recordGalleryPublish).
+  // Deliberately not carried over by saveToGallery's upsert: a re-render
+  // replaces the file, and the new file hasn't been published anywhere.
+  published?: Partial<Record<SocialPlatform, GalleryPublishRecord>>;
 };
 
-type GalleryMeta = Omit<GalleryEntry, "id" | "createdAt" | "sizeBytes">;
+type GalleryMeta = Omit<GalleryEntry, "id" | "createdAt" | "sizeBytes" | "published">;
 
 function isSafeId(id: string) {
   return /^[a-zA-Z0-9-]+$/.test(id);
@@ -85,11 +91,72 @@ export async function listGalleryEntries(userId: string): Promise<GalleryEntry[]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+// One entry plus the absolute path of its mp4, only if it belongs to this
+// user -- null otherwise (unknown id, someone else's video, file missing).
+export async function getGalleryVideo(
+  id: string,
+  userId: string
+): Promise<{ entry: GalleryEntry; filePath: string } | null> {
+  if (!isSafeId(id)) return null;
+  try {
+    const raw = await fs.readFile(path.join(GALLERY_MANIFEST_DIR, `${id}.json`), "utf8");
+    const entry = JSON.parse(raw) as GalleryEntry;
+    if (entry.userId !== userId) return null;
+    const filePath = path.join(GALLERY_ASSETS_DIR, `${id}.mp4`);
+    await fs.access(filePath);
+    return { entry, filePath };
+  } catch {
+    return null;
+  }
+}
+
+// Uploads to several platforms finish independently and each one rewrites
+// the same manifest file -- chained so two of them can never interleave
+// their read-modify-write and drop each other's record.
+let publishWriteQueue: Promise<unknown> = Promise.resolve();
+
+// `renderedAt` is the entry's updatedAt when the upload STARTED: if the
+// video was re-rendered while it was uploading, what got published is no
+// longer the file in the gallery, so nothing is recorded against it.
+export function recordGalleryPublish(
+  id: string,
+  userId: string,
+  renderedAt: string | undefined,
+  platform: SocialPlatform,
+  record: GalleryPublishRecord
+): Promise<void> {
+  const run = async () => {
+    const current = await getGalleryVideo(id, userId);
+    if (!current || current.entry.updatedAt !== renderedAt) return;
+    const entry: GalleryEntry = {
+      ...current.entry,
+      published: { ...current.entry.published, [platform]: record },
+    };
+    await fs.writeFile(path.join(GALLERY_MANIFEST_DIR, `${id}.json`), JSON.stringify(entry, null, 2));
+  };
+  const next = publishWriteQueue.then(run, run);
+  publishWriteQueue = next.catch(() => {});
+  return next;
+}
+
 async function deleteGalleryFiles(id: string) {
   await Promise.all([
     fs.unlink(path.join(GALLERY_MANIFEST_DIR, `${id}.json`)).catch(() => {}),
     fs.unlink(path.join(GALLERY_ASSETS_DIR, `${id}.mp4`)).catch(() => {}),
   ]);
+}
+
+// The project a video was made from goes with it when its OWNER removes the
+// video -- its settings and the background/audio they uploaded for it are
+// theirs to get rid of, and nothing else would ever delete them. Never
+// fails the deletion of the video itself.
+async function deleteEntryDraft(entry: GalleryEntry) {
+  if (!entry.draftId) return;
+  try {
+    await deleteDraft(entry.draftId);
+  } catch (err) {
+    console.warn(`[Gallery] Failed to delete draft ${entry.draftId}:`, err);
+  }
 }
 
 export async function deleteGalleryEntry(id: string, userId: string): Promise<boolean> {
@@ -98,15 +165,25 @@ export async function deleteGalleryEntry(id: string, userId: string): Promise<bo
   const entry = entries.find((e) => e.id === id);
   if (!entry || entry.userId !== userId) return false;
   await deleteGalleryFiles(id);
+  await deleteEntryDraft(entry);
   return true;
 }
 
-// Removes every gallery entry (manifest + mp4) belonging to a user. Called
-// on account deletion -- best-effort: failures are logged, never thrown, so
-// the user's DB row can still be removed even if file cleanup hiccups.
+// Removes every gallery entry (manifest + mp4) belonging to a user, and the
+// draft behind each. Called on account deletion -- best-effort: failures are
+// logged, never thrown, so the user's DB row can still be removed even if
+// file cleanup hiccups.
 export async function deleteUserGallery(userId: string): Promise<void> {
   const entries = await listGalleryEntries(userId);
   await Promise.all(entries.map((e) => deleteGalleryFiles(e.id)));
+  await Promise.all(entries.map(deleteEntryDraft));
+}
+
+// Every draft some saved video (anyone's) was made from -- the ones
+// pruneAbandonedDrafts (drafts.ts) must never expire.
+export async function listLinkedDraftIds(): Promise<Set<string>> {
+  const entries = await readAllEntries();
+  return new Set(entries.map((e) => e.draftId).filter((id): id is string => Boolean(id)));
 }
 
 async function pruneOldEntries(userId: string) {

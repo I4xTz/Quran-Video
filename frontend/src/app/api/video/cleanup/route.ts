@@ -4,6 +4,8 @@ import path from "path";
 import { PREPARED_AUDIO_REL_DIR } from "@/lib/preparedAudio";
 import { getSession } from "@/lib/auth/session";
 import { isAdminEmail } from "@/lib/auth/admin";
+import { pruneAbandonedDrafts } from "@/lib/drafts";
+import { listLinkedDraftIds } from "@/lib/videoGallery";
 
 export const runtime = "nodejs";
 
@@ -28,7 +30,7 @@ async function clearDirectory(dirPath: string) {
 }
 
 export async function DELETE() {
-  // Wipes EVERY user's temp files and drafts -- admins only.
+  // Wipes EVERY user's temp files -- admins only.
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
@@ -44,13 +46,14 @@ export async function DELETE() {
       path.join(process.cwd(), "public", PREPARED_AUDIO_REL_DIR),
       path.join(process.cwd(), "public", "renders", "output"),
       path.join(process.cwd(), "public", "render-assets", "generated-bg"),
-      // Saved drafts have no automatic expiry (see /api/drafts) -- this is
-      // their only cleanup path, manual just like the rest of this route.
-      path.join(process.cwd(), "src", "data", "drafts"),
-      path.join(process.cwd(), "public", "render-assets", "drafts"),
     ];
 
     await Promise.all(pathsToClear.map(clearDirectory));
+
+    // Drafts are NOT wiped here: they are users' projects, each one deleted
+    // by its own user. Only the abandoned ones go (see drafts.ts) -- the
+    // same rule that already runs on its own from /api/drafts.
+    await pruneAbandonedDrafts(await listLinkedDraftIds());
     
     // 2. Call backend cleanup
     const baseUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://backend:8000";

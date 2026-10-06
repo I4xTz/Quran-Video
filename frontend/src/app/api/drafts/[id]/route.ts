@@ -30,9 +30,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 // Called by the "Start Over" button (VideoCreatorForm.handleStartOver) --
-// drafts have no automatic expiry, so explicitly deleting one when the user
-// abandons it is the only thing keeping src/data/drafts and
-// public/render-assets/drafts from growing forever.
+// the user discarding their own project. Drafts nobody comes back for
+// expire separately (see pruneAbandonedDrafts in lib/drafts.ts).
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 

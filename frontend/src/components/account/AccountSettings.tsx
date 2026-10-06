@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useLanguage } from "@/lib/LanguageContext";
 import DeleteAccountDialog from "@/components/account/DeleteAccountDialog";
+import ConnectedAccounts from "@/components/account/ConnectedAccounts";
 import Spinner from "@/components/ui/Spinner";
 import {
   CameraIcon,
@@ -455,6 +456,8 @@ export default function AccountSettings({ email, initialName, initialAvatarUrl, 
             </button>
           </div>
 
+          <ConnectedAccounts />
+
           {/* Clear temporary files (server-wide, admins only) */}
           {isAdmin && (
           <div className="mt-6 rounded-xl border border-border bg-background/50 p-5">
@@ -463,8 +466,8 @@ export default function AccountSettings({ email, initialName, initialAvatarUrl, 
             </h2>
             <p className="text-sm text-muted leading-relaxed mb-4">
               {t(
-                "امسح الصور والفيديوهات والأصوات المؤقتة المتبقية من الجلسات والمسودات السابقة لتوفير مساحة التخزين. فيديوهات معرضك المحفوظة لن تتأثر.",
-                "Depolama alanı boşaltmak için önceki oturum ve taslaklardan kalan geçici görsel, video ve ses dosyalarını temizleyin. Kaydedilmiş galeri videolarınız etkilenmez."
+                "امسح الصور والفيديوهات والأصوات المؤقتة المتبقية من الجلسات السابقة، والمسودات المهجورة منذ أكثر من 30 يومًا، لتوفير مساحة التخزين. فيديوهات المعرض ومشاريعها لن تتأثر.",
+                "Depolama alanı boşaltmak için önceki oturumlardan kalan geçici görsel, video ve ses dosyalarını ve 30 günden uzun süredir terk edilmiş taslakları temizleyin. Galeri videoları ve projeleri etkilenmez."
               )}
             </p>
             {cleanupError && <p className="mb-3 text-xs text-accent-red">{cleanupError}</p>}

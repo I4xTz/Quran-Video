@@ -86,6 +86,22 @@ Uploaded files, drafts, gallery videos, avatars and the backend's audio cache ar
 
 > ⚠️ Password-reset and email-verification links are still returned directly in the API response (`DEV_MODE_NO_EMAIL` in `frontend/src/lib/auth/tokens.ts`) until real email delivery is wired up. While it is on, anyone who knows a user's email can reset that user's password.
 
+## 📤 Publishing to YouTube, TikTok and Instagram
+
+Saved gallery videos can be published straight to linked accounts (the paper-plane button on each card; accounts are linked on the Account page). Each platform is optional and needs your own developer app; put its keys in `.env` (see `.env.example`) and register `<APP_URL>/api/social/<platform>/callback` as its redirect URI.
+
+- **YouTube**: Google Cloud project with *YouTube Data API v3* enabled and a *Web application* OAuth client. Works on `http://localhost:3000`. Until the project passes Google's API audit, uploads are locked to private.
+- **TikTok**: app with *Login Kit* and *Content Posting API*. Needs an `https` redirect URI. Until the app is audited, direct posts only work on a private account with private visibility; `TIKTOK_POST_MODE=inbox` sends the video to the TikTok inbox as a draft instead.
+- **Instagram**: Meta app with *Instagram API with Instagram login*. Needs an `https` redirect URI and a Business or Creator account. Posts are always public (Reels).
+
+After adding a migration-bearing update in development, apply it without rebuilding:
+
+```bash
+docker compose exec frontend npx prisma migrate deploy
+docker compose exec frontend npx prisma generate
+docker compose restart frontend
+```
+
 ## 🛑 Stopping the Application
 To stop the running containers, press `Ctrl+C` in your terminal, and then run:
 ```bash

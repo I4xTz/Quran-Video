@@ -5,6 +5,7 @@ import "./pua-fonts.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { LanguageProvider } from "@/lib/LanguageContext";
 import { TranslationProvider } from "@/lib/TranslationContext";
+import Footer from "@/components/layout/Footer";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -117,6 +118,7 @@ export default function RootLayout({
                 Ana içeriğe geç
               </a>
               {children}
+              <Footer />
             </TranslationProvider>
           </ThemeProvider>
         </LanguageProvider>

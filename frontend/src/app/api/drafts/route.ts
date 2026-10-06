@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { pruneAbandonedDrafts } from "@/lib/drafts";
+import { listLinkedDraftIds } from "@/lib/videoGallery";
 
 export const runtime = "nodejs";
 
@@ -32,6 +34,24 @@ const MAX_BYTES: Record<"bg" | "bgVideo" | "audio" | "font", number> = {
   audio: 100 * 1024 * 1024,
   font: 10 * 1024 * 1024,
 };
+
+// There is no scheduler in this app, so abandoned drafts are swept as a
+// side effect of drafts being saved: at most once every few hours, in the
+// background, never delaying or failing the save that triggered it.
+const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let lastSweepAt = 0;
+
+function sweepAbandonedDrafts() {
+  const now = Date.now();
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return;
+  lastSweepAt = now;
+  listLinkedDraftIds()
+    .then(pruneAbandonedDrafts)
+    .then((removed) => {
+      if (removed > 0) console.log(`[Drafts] Pruned ${removed} abandoned draft(s)`);
+    })
+    .catch((err) => console.warn("[Drafts] Abandoned-draft sweep failed:", err));
+}
 
 function isValidImage(buffer: Buffer) {
   return VALID_IMAGE_HEADERS.some((header) => header.every((byte, i) => buffer[i] === byte));
@@ -146,6 +166,8 @@ export async function POST(req: Request) {
 
     await fs.mkdir(DRAFTS_DIR, { recursive: true });
     await fs.writeFile(path.join(DRAFTS_DIR, `${draftId}.json`), JSON.stringify(draft, null, 2));
+
+    sweepAbandonedDrafts();
 
     return NextResponse.json({ success: true, draftId });
   } catch (error) {

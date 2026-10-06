@@ -39,4 +39,32 @@ model User {
   passwordResetExpiresAt  DateTime?
   emailVerifyTokenHash     String?   @unique
   emailVerifyExpiresAt    DateTime?
+
+  socialAccounts SocialAccount[]
+}
+
+// A YouTube / TikTok / Instagram account this user linked so finished videos
+// can be published straight from the gallery (see src/lib/social). One row
+// per platform per user -- reconnecting replaces it. Tokens are stored
+// ENCRYPTED (AES-256-GCM, see src/lib/social/crypto.ts): unlike the hashed
+// reset tokens above these have to be read back to call the platform, so a
+// dumped DB row alone must still be useless without AUTH_SECRET.
+model SocialAccount {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform    String // "youtube" | "tiktok" | "instagram"
+  // The platform's own id for the account (channel id / open_id / IG user id).
+  externalId  String
+  displayName String
+  accessTokenEnc  String
+  refreshTokenEnc String?
+  // null = the platform gave no expiry for that token.
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scopes      String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, platform])
 }

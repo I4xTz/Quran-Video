@@ -156,6 +156,18 @@ export default function SignupPage() {
                 {loading && <Spinner size="sm" className="border-white/40 border-t-white" />}
                 {isAr ? "إنشاء حساب" : "Kayıt Ol"}
               </button>
+
+              <p className="text-xs text-muted text-center leading-relaxed">
+                {isAr ? "بإنشاء حساب فإنك توافق على " : "Hesap oluşturarak "}
+                <Link href="/terms" className="text-primary hover:underline">
+                  {isAr ? "شروط الاستخدام" : "Kullanım Koşulları"}
+                </Link>
+                {isAr ? " و" : " ve "}
+                <Link href="/privacy" className="text-primary hover:underline">
+                  {isAr ? "سياسة الخصوصية" : "Gizlilik Politikası"}
+                </Link>
+                {isAr ? "." : "'nı kabul etmiş olursunuz."}
+              </p>
             </form>
           </div>
 

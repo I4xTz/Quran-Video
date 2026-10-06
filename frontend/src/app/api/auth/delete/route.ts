@@ -3,6 +3,10 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { deleteUserGallery } from "@/lib/videoGallery";
+import fs from "fs/promises";
+import path from "path";
+import { SOCIAL_PLATFORMS } from "@/lib/social/platforms";
+import { disconnectAccount } from "@/lib/social/accounts";
 
 export async function POST(req: Request) {
   const session = await getSession();
@@ -41,6 +45,22 @@ export async function POST(req: Request) {
     await deleteUserGallery(user.id);
   } catch (err) {
     console.error("[auth/delete] Failed to clean up gallery:", err);
+  }
+
+  // The linked-account rows go with the user row (ON DELETE CASCADE); this
+  // additionally asks each platform to revoke the grant itself. Best-effort,
+  // like the gallery cleanup above.
+  for (const platform of SOCIAL_PLATFORMS) {
+    try {
+      await disconnectAccount(user.id, platform);
+    } catch (err) {
+      console.error(`[auth/delete] Failed to disconnect ${platform}:`, err);
+    }
+  }
+
+  // avatarPath is always "avatars/<file>" (see /api/auth/profile).
+  if (user.avatarPath?.startsWith("avatars/") && !user.avatarPath.includes("..")) {
+    await fs.unlink(path.join(process.cwd(), "public", user.avatarPath)).catch(() => {});
   }
 
   try {

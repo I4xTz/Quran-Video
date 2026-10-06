@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { TrashIcon, ArrowDownTrayIcon, ArrowRightIcon, PencilSquareIcon, FilmIcon } from "@heroicons/react/24/outline";
+import { TrashIcon, ArrowDownTrayIcon, ArrowRightIcon, PencilSquareIcon, FilmIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import { useLanguage } from "@/lib/LanguageContext";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import PublishDialog from "@/components/video-creator/PublishDialog";
+import { PLATFORM_LABEL, SOCIAL_PLATFORMS } from "@/lib/social/platforms";
 import { latinNameForArabicReciterName } from "@/lib/reciterNames";
 import type { GalleryEntry } from "@/lib/videoGallery";
 
@@ -34,6 +36,8 @@ export default function GalleryGrid({ entries: initialEntries }: { entries: Gall
   const [entries, setEntries] = useState(initialEntries);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [publishId, setPublishId] = useState<string | null>(null);
+  const publishEntry = entries.find((e) => e.id === publishId) ?? null;
   const router = useRouter();
 
   // page.tsx re-reads the manifest on every request (force-dynamic), so a
@@ -185,6 +189,28 @@ export default function GalleryGrid({ entries: initialEntries }: { entries: Gall
                     </p>
                   )}
 
+                  {/* Where this exact file has already been published (see
+                      recordGalleryPublish) -- cleared again by a re-render,
+                      since that replaces the file with one that hasn't. */}
+                  {entry.published && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {SOCIAL_PLATFORMS.filter((p) => entry.published?.[p]).map((p) => {
+                        const label = PLATFORM_LABEL[p][isArabic ? "ar" : "tr"];
+                        const url = entry.published?.[p]?.url;
+                        const classes = "rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary";
+                        return url ? (
+                          <a key={p} href={url} target="_blank" rel="noopener noreferrer" className={`${classes} hover:bg-primary/20`}>
+                            {label} ↗
+                          </a>
+                        ) : (
+                          <span key={p} className={classes}>
+                            {label} ✓
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   <div className="flex gap-2 mt-auto pt-2">
                     <a
                       href={videoSrc}
@@ -194,6 +220,14 @@ export default function GalleryGrid({ entries: initialEntries }: { entries: Gall
                       <ArrowDownTrayIcon className="h-4 w-4" />
                       {isArabic ? "تنزيل" : "İndir"}
                     </a>
+                    <button
+                      type="button"
+                      onClick={() => setPublishId(entry.id)}
+                      title={isArabic ? "نشر" : "Yayınla"}
+                      className="flex items-center justify-center rounded-lg border border-border px-3 text-primary hover:bg-primary/10 transition-colors"
+                    >
+                      <PaperAirplaneIcon className={`h-4 w-4 ${isArabic ? "-scale-x-100" : ""}`} />
+                    </button>
                     {/* Only ever present for a video rendered after this field
                         was introduced (see GalleryEntry.draftId) -- an older
                         entry has no draft left to restore, so the button is
@@ -239,6 +273,15 @@ export default function GalleryGrid({ entries: initialEntries }: { entries: Gall
         }}
         onClose={() => setConfirmDeleteId(null)}
       />
+
+      {publishEntry && (
+        <PublishDialog
+          key={publishEntry.id}
+          entry={publishEntry}
+          onClose={() => setPublishId(null)}
+          onPublished={() => router.refresh()}
+        />
+      )}
     </div>
   );
 }
